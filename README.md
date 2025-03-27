@@ -8,7 +8,7 @@ There are two scripts to run in order...
 
 The first will create a json file of keys from your FLAC local library directory with a list of values containing inspired artists, avoiding copycat bands etc..  This uses the MusicBrainz developer API.
 
-I have made sure that there is a 6 second delay between each artist lookup on the MusicBrainz API since it is rate limited.  You can reduce this value in the musicdiscovery.py script (there is a constant at the top of the file for it) and there is a fall back rate limiting timout which will delay temporarily if it finds a rate limiting problem.  However, I've found 6s to be a workable number.
+I have made sure that there is a 6 second delay between each artist lookup on the MusicBrainz API since it is rate limited.  You can reduce this value in the musicdiscovery.py script (there is a constant at the top of the file for it) and there is a fall back rate limiting timeout which will delay temporarily if it finds a rate limiting problem.  However, I've found 6s to be a workable number.
 
 The second will create, based on the inspired artists lists (10 max, though this is configurable in the first script), spotify playlists based on genre.
 
