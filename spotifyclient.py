@@ -1,21 +1,34 @@
 import json
+import backoff
 import random
 import logging
 import time
 import sys
 import os
+import socket
+import backoff
 from tkinter import Tk
 from tkinter.filedialog import askopenfilename
 from spotipy import SpotifyOAuth, Spotify
 from collections import defaultdict
 from colorama import init, Fore, Style, Cursor
 from spotipy.exceptions import SpotifyException
-# Commented out MusicBrainz import
-# from musicbrainz import MusicBrainzAPI
 
 
 # Initialize Colorama
 init(autoreset=True)
+
+
+class ConsoleCleaner:
+    """Handles console cleaning for error messages"""
+    
+    @staticmethod
+    def clear_last_lines(num_lines=1):
+        """Clear the specified number of lines from the console"""
+        for _ in range(num_lines):
+            sys.stdout.write('\033[F')  # Move cursor up one line
+            sys.stdout.write('\033[K')  # Clear line
+        sys.stdout.flush()
 
 
 class ProgressBar:
@@ -127,21 +140,39 @@ class CustomLogFormatter(logging.Formatter):
         elif levelname == 'WARNING':
             return f"{Fore.YELLOW}WARNING: {Fore.RED}{record.getMessage()}{Style.RESET_ALL}"
         elif levelname == 'ERROR':
+            if "Failed to resolve 'api.spotify.com'" in record.getMessage():
+                # Mark DNS errors for special handling
+                return f"{Fore.YELLOW}ERROR: {Fore.RED}{record.getMessage()}{Style.RESET_ALL} [DNS_ERROR]"
             return f"{Fore.YELLOW}ERROR: {Fore.RED}{record.getMessage()}{Style.RESET_ALL}"
         else:
             return message
 
 
 class ProgressBarLogHandler(logging.StreamHandler):
-    """Custom log handler that preserves the progress bar"""
+    """Custom log handler that preserves the progress bar and handles DNS errors"""
     def __init__(self, progress_bar):
         super().__init__()
         self.progress_bar = progress_bar
         self.setFormatter(CustomLogFormatter())
+        self.last_dns_error_lines = 0
         
     def emit(self, record):
         # Format the log message
         message = self.format(record)
+        
+        # Check if this is a DNS error that should be removed later
+        is_dns_error = "[DNS_ERROR]" in message
+        
+        # If this is a DNS error, clear any previous DNS error first
+        if is_dns_error and self.last_dns_error_lines > 0:
+            # Save cursor position
+            sys.stdout.write("\033[s")
+            
+            # Clear previous DNS error messages
+            ConsoleCleaner.clear_last_lines(self.last_dns_error_lines)
+            
+            # Restore cursor position
+            sys.stdout.write("\033[u")
         
         # Save cursor position
         sys.stdout.write("\033[s")
@@ -153,8 +184,15 @@ class ProgressBarLogHandler(logging.StreamHandler):
         # Clear the entire line before writing the message
         sys.stdout.write("\033[K")
         
+        # Remove the DNS_ERROR marker from the display
+        display_message = message.replace("[DNS_ERROR]", "")
+        
         # Write log message and newline with line clear
-        sys.stdout.write(message + "\n\033[K\n")
+        sys.stdout.write(display_message + "\n\033[K\n")
+        
+        # If this is a DNS error, remember how many lines it took
+        if is_dns_error:
+            self.last_dns_error_lines = display_message.count('\n') + 1
         
         # Restore cursor position
         sys.stdout.write("\033[u")
@@ -166,17 +204,35 @@ class ProgressBarLogHandler(logging.StreamHandler):
         sys.stdout.flush()
 
 
+# Define backoff strategy for DNS resolution issues
+def backoff_hdlr(details):
+    logging.warning(f"Backing off {details['wait']:0.1f} seconds after {details['tries']} tries calling {details['target'].__name__}")
+
+
+def dns_resolve_backoff(exception):
+    """Return True if this is a DNS resolution error"""
+    if isinstance(exception, socket.gaierror):
+        return True
+    if isinstance(exception, Exception) and "getaddrinfo failed" in str(exception):
+        return True
+    return False
+
+
 class SpotifyPlaylistManager:
     request_delay = 1.2  # Minimum delay between consecutive requests in seconds
 
     def __init__(self):
         self.progress_bar = None
         self.sp = self.create_spotify_client()
-        # Commented out MusicBrainz initialization
-        # self.mb_api = MusicBrainzAPI(user_email="oliverjernster@hotmail.com")
         logging.info("Spotify Authentication Successful!")
 
-
+    @backoff.on_exception(
+        backoff.expo, 
+        (socket.gaierror, Exception),
+        max_tries=5,
+        giveup=lambda e: not dns_resolve_backoff(e),
+        on_backoff=backoff_hdlr
+    )
     def create_spotify_client(self):
         try:
             # Use more comprehensive scopes to ensure we have all needed permissions
@@ -189,8 +245,8 @@ class SpotifyPlaylistManager:
             ]
             
             auth_manager = SpotifyOAuth(
-                client_id="<client id here>",
-                client_secret="<client secret here>",
+                client_id="<your client id>",
+                client_secret="<your secret>",
                 redirect_uri="http://127.0.0.1:8888/callback",
                 scope=" ".join(scopes),
                 cache_path=".spotify_token_cache"  # Cache token to avoid repeated auth
@@ -209,7 +265,13 @@ class SpotifyPlaylistManager:
                 logging.info(f"Token scopes: {token_info.get('scope', 'Unknown')}")
                 
             return client
+        except socket.gaierror as e:
+            logging.error(f"DNS Resolution Failed: {e}")
+            raise
         except Exception as e:
+            if "getaddrinfo failed" in str(e):
+                logging.error(f"Failed to resolve 'api.spotify.com': {e}")
+                raise
             logging.error(f"Spotify Authentication Failed: {e}")
             raise
 
@@ -260,6 +322,13 @@ class SpotifyPlaylistManager:
             logging.error(f"Error reading JSON file: {e}")
             return {}
 
+    @backoff.on_exception(
+        backoff.expo, 
+        (socket.gaierror, Exception),
+        max_tries=5,
+        giveup=lambda e: not dns_resolve_backoff(e),
+        on_backoff=backoff_hdlr
+    )
     def retry_on_rate_limit(self, func, *args, **kwargs):
         max_retries = 3
         retry_count = 0
@@ -294,7 +363,13 @@ class SpotifyPlaylistManager:
                     logging.info(f"Retrying ({retry_count}/{max_retries})...")
                     time.sleep(2)  # Wait before retry
                     continue
+            except socket.gaierror as e:
+                logging.error(f"Failed to resolve 'api.spotify.com': {e}")
+                raise  # Let backoff handle this
             except Exception as e:
+                if "getaddrinfo failed" in str(e):
+                    logging.error(f"Failed to resolve 'api.spotify.com': {e}")
+                    raise  # Let backoff handle this
                 logging.error(f"General error in {func.__name__}: {e}")
                 retry_count += 1
                 if retry_count < max_retries:
@@ -433,6 +508,13 @@ class SpotifyPlaylistManager:
         except Exception as e:
             logging.error(f"Error in create_playlists_in_spotify: {e}")
 
+    @backoff.on_exception(
+        backoff.expo, 
+        (socket.gaierror, Exception),
+        max_tries=5,
+        giveup=lambda e: not dns_resolve_backoff(e),
+        on_backoff=backoff_hdlr
+    )
     def create_playlist(self, playlist_name, track_ids, user_id):
         try:
             # First create an empty playlist
@@ -488,23 +570,32 @@ def main():
         handlers=[logging.StreamHandler()]
     )
     
-    manager = SpotifyPlaylistManager()
-    file_path = manager.select_json_file()
-    if file_path:
-        # Now using the modified function that doesn't use MusicBrainz
-        playlist_artists = manager.read_artist_genres(file_path)
-        if playlist_artists:
-            manager.generate_playlists_by_genre(playlist_artists)
+    try:
+        manager = SpotifyPlaylistManager()
+        file_path = manager.select_json_file()
+        if file_path:
+            # Now using the modified function that doesn't use MusicBrainz
+            playlist_artists = manager.read_artist_genres(file_path)
+            if playlist_artists:
+                manager.generate_playlists_by_genre(playlist_artists)
+            else:
+                logging.error("No valid artists found in the JSON file.")
         else:
-            logging.error("No valid artists found in the JSON file.")
-    else:
-        logging.info("No file selected.")
+            logging.info("No file selected.")
+    except KeyboardInterrupt:
+        print("\nScript execution was interrupted by user.")
+    except Exception as e:
+        if "getaddrinfo failed" in str(e) or isinstance(e, socket.gaierror):
+            logging.error(f"Network connectivity issue: Failed to resolve 'api.spotify.com'")
+            logging.info("Please check your internet connection and try again.")
+        else:
+            logging.error(f"An unexpected error occurred: {e}")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("Script execution was interrupted by user.")
+        print("\nScript execution was interrupted by user.")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
