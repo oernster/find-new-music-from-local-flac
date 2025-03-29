@@ -15,8 +15,8 @@ The Deezer App doesn't support API usage currently for developers so this has to
 
 - Rip CDs to FLAC format and store them all in one super directory with subdirectories labelled by artist name; this should be done automatically by most CD rippers.
 - Create a Spotify account and go to the spotify developer API portal and login.  Then create an app.  In settings, specify the callback as http://127.0.0.1:8888/callback and tick the Web API and Web Playback SDK options.
-- Go to settings and get your spotify client id and client secret and paste them into spotifyclient.py.
-- Create a musicbrainz account and put your email as a courtesy in the musicbrainz.py file.
+- Go to settings and get your spotify client id and client secret and paste them into spotifyclient.py in the class SpotifyPlaylistManager, method named create_spotify_client.
+- Create a musicbrainz account and put your email as a courtesy in the musicbrainz.py file in the ____init____ constructor method in the class MusicBrainzAPI.
 
 ### Installation
 
