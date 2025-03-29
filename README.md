@@ -1,4 +1,4 @@
-# Playlist Generator v1.0
+# Playlist Generator v2.0
 
 # Discover new music with generated new artists top tracks playlists from your local FLAC music organised by genre!!! 
 
