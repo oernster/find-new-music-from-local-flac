@@ -3,6 +3,8 @@ import json
 import time
 import re
 import os
+import sys
+import io
 import random
 import tkinter as tk
 from tkinter import filedialog
@@ -13,6 +15,39 @@ from abc import ABC, abstractmethod
 from musicbrainz import MusicBrainzAPI, MusicDatabase, normalize_artist_name
 from libraryscanner import MusicLibraryScanner, FlacLibraryScanner
 
+
+# Fix console encoding issues on Windows
+if sys.platform == 'win32':
+    # Configure UTF-8 mode
+    if hasattr(sys, 'set_utf8_mode'):
+        sys.set_utf8_mode(True)
+    
+    # Force stdin/stdout to use UTF-8
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# Also add an alternative print_banner function that you can use if needed
+def print_banner_safe():
+    """Print a simple ASCII banner without Unicode characters"""
+    banner = """
+    ***************************************
+    *                                     *
+    *        MUSIC DISCOVERY TOOL         *
+    *                                     *
+    ***************************************
+    """
+    print(banner)
+
+# Replace your current print_banner function with this if needed
+def print_banner():
+    try:
+        # Try to print the original fancy banner
+        # Your existing banner code here
+        banner = "..." # Your existing banner variable
+        print(banner)
+    except UnicodeEncodeError:
+        # Fall back to safe ASCII banner if the fancy one fails
+        print_banner_safe()
 
 # Initialize colorama
 init(autoreset=True)
@@ -445,6 +480,7 @@ def main():
     parser.add_argument('--output', type=str, default='./recommendations.json')
     parser.add_argument('--email', type=str, default=DEFAULT_EMAIL)
     parser.add_argument('--max-artists', type=int, default=None, help='Maximum number of artists to process (leave empty for entire library)')
+    parser.add_argument('--save-in-music-dir', action='store_true', help='Save recommendations.json in the music directory')
 
     args = parser.parse_args()
     
@@ -454,10 +490,16 @@ def main():
         print("No directory selected. Exiting.")
         return
     
+    # Determine output file path
+    output_file = args.output
+    if args.save_in_music_dir:
+        output_file = os.path.join(music_dir, 'recommendations.json')
+        print(f"{Fore.CYAN}Will save recommendations to music directory: {output_file}{Style.RESET_ALL}")
+    
     # Create components
     scanner = FlacLibraryScanner(music_dir)
     music_db = MusicBrainzAPI(user_email=args.email)
-    persistence = JsonFilePersistence(output_file=args.output)
+    persistence = JsonFilePersistence(output_file=output_file)
     
     # Create and run app
     app = MusicDiscoveryApp(
@@ -468,7 +510,7 @@ def main():
     
     try:
         app.run()
-        print(f"\nMusic discovery complete! Check {args.output}")
+        print(f"\nMusic discovery complete! Check {output_file}")
     except Exception as e:
         print(f"Error during execution: {e}")
 

@@ -5,6 +5,7 @@ import logging
 import time
 import sys
 import os
+import io
 import socket
 import backoff
 from tkinter import Tk
@@ -13,7 +14,11 @@ from spotipy import SpotifyOAuth, Spotify
 from collections import defaultdict
 from colorama import init, Fore, Style, Cursor
 from spotipy.exceptions import SpotifyException
+from musicbrainz import MusicBrainzAPI, normalize_artist_name
 
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # Initialize Colorama
 init(autoreset=True)
@@ -133,76 +138,74 @@ class CustomLogFormatter(logging.Formatter):
     """Custom formatter to add colors to log messages"""
     def format(self, record):
         levelname = record.levelname
-        message = super().format(record)
+        message = record.getMessage()
         
         if levelname == 'INFO':
-            return f"{Fore.YELLOW}INFO: {Fore.CYAN}{record.getMessage()}{Style.RESET_ALL}"
+            return f"{Fore.CYAN}{message}{Style.RESET_ALL}"
         elif levelname == 'WARNING':
-            return f"{Fore.YELLOW}WARNING: {Fore.RED}{record.getMessage()}{Style.RESET_ALL}"
+            return f"{Fore.YELLOW}WARNING: {Fore.RED}{message}{Style.RESET_ALL}"
         elif levelname == 'ERROR':
-            if "Failed to resolve 'api.spotify.com'" in record.getMessage():
+            if "Failed to resolve 'api.spotify.com'" in message:
                 # Mark DNS errors for special handling
-                return f"{Fore.YELLOW}ERROR: {Fore.RED}{record.getMessage()}{Style.RESET_ALL} [DNS_ERROR]"
-            return f"{Fore.YELLOW}ERROR: {Fore.RED}{record.getMessage()}{Style.RESET_ALL}"
+                return f"{Fore.YELLOW}ERROR: {Fore.RED}{message}{Style.RESET_ALL} [DNS_ERROR]"
+            return f"{Fore.YELLOW}ERROR: {Fore.RED}{message}{Style.RESET_ALL}"
         else:
             return message
 
 
-class ProgressBarLogHandler(logging.StreamHandler):
-    """Custom log handler that preserves the progress bar and handles DNS errors"""
-    def __init__(self, progress_bar):
-        super().__init__()
-        self.progress_bar = progress_bar
-        self.setFormatter(CustomLogFormatter())
-        self.last_dns_error_lines = 0
+class ProgressBar:
+    def __init__(self, total, width=50, prefix='Progress:', suffix='Complete', fill='█', empty='─'):
+        self.total = total
+        self.width = width
+        self.prefix = prefix
+        self.suffix = suffix
+        self.fill = fill
+        self.empty = empty
+        self.current = 0
+        self.start_time = time.time()
+        self.request_delay = 1.2  # Default delay
         
-    def emit(self, record):
-        # Format the log message
-        message = self.format(record)
+    def update(self, current=None, request_delay=None):
+        """Update progress bar state"""
+        if current is not None:
+            self.current = current
+        if request_delay is not None:
+            self.request_delay = request_delay
+    
+    def increment(self):
+        """Increment progress by 1"""
+        self.current += 1
+    
+    def calculate_eta(self):
+        """Calculate and format the estimated time to completion"""
+        if self.current == 0:
+            return "Calculating..."
         
-        # Check if this is a DNS error that should be removed later
-        is_dns_error = "[DNS_ERROR]" in message
-        
-        # If this is a DNS error, clear any previous DNS error first
-        if is_dns_error and self.last_dns_error_lines > 0:
-            # Save cursor position
-            sys.stdout.write("\033[s")
+        elapsed = time.time() - self.start_time
+        if elapsed == 0:
+            return "Calculating..."
             
-            # Clear previous DNS error messages
-            ConsoleCleaner.clear_last_lines(self.last_dns_error_lines)
-            
-            # Restore cursor position
-            sys.stdout.write("\033[u")
+        items_per_second = self.current / elapsed
+        items_remaining = self.total - self.current
         
-        # Save cursor position
-        sys.stdout.write("\033[s")
+        # Factor in the request delay for remaining tasks
+        remaining_seconds = items_remaining / items_per_second
         
-        # Move cursor to a position for log messages
-        # First clear the area where the progress bar is (move up 2 lines from cursor)
-        sys.stdout.write("\033[2A")
-        
-        # Clear the entire line before writing the message
-        sys.stdout.write("\033[K")
-        
-        # Remove the DNS_ERROR marker from the display
-        display_message = message.replace("[DNS_ERROR]", "")
-        
-        # Write log message and newline with line clear
-        sys.stdout.write(display_message + "\n\033[K\n")
-        
-        # If this is a DNS error, remember how many lines it took
-        if is_dns_error:
-            self.last_dns_error_lines = display_message.count('\n') + 1
-        
-        # Restore cursor position
-        sys.stdout.write("\033[u")
-        
-        # Redraw the progress bar
-        self.progress_bar.display()
-        
-        # Flush to ensure everything is displayed
-        sys.stdout.flush()
-
+        # Format the remaining time
+        if remaining_seconds < 60:
+            return f"{int(remaining_seconds)}s"
+        elif remaining_seconds < 3600:
+            minutes = int(remaining_seconds // 60)
+            seconds = int(remaining_seconds % 60)
+            return f"{minutes}m {seconds}s"
+        else:
+            hours = int(remaining_seconds // 3600)
+            minutes = int((remaining_seconds % 3600) // 60)
+            return f"{hours}h {minutes}m"
+    
+    def cleanup(self):
+        """Placeholder for cleanup method"""
+        pass
 
 # Define backoff strategy for DNS resolution issues
 def backoff_hdlr(details):
@@ -218,12 +221,50 @@ def dns_resolve_backoff(exception):
     return False
 
 
+class ProgressBarLogHandler(logging.StreamHandler):
+    """Custom log handler that preserves the progress bar"""
+    def __init__(self, progress_bar):
+        super().__init__()
+        self.progress_bar = progress_bar
+        self.setFormatter(CustomLogFormatter())
+        
+    def emit(self, record):
+        # Format the log message
+        message = self.format(record)
+        
+        # Save cursor position
+        sys.stdout.write("\033[s")
+        
+        # Move cursor to a position for log messages
+        # First clear the area where the progress bar is (move up 2 lines from cursor)
+        sys.stdout.write("\033[2A")
+        
+        # Clear the entire line before writing the message
+        sys.stdout.write("\033[K")
+        
+        # Write log message and newline with line clear
+        sys.stdout.write(message + "\n\033[K\n")
+        
+        # Restore cursor position
+        sys.stdout.write("\033[u")
+        
+        # Redraw the progress bar
+        self.progress_bar.display()
+        
+        # Flush to ensure everything is displayed
+        sys.stdout.flush()
+
+
 class SpotifyPlaylistManager:
-    request_delay = 1.2  # Minimum delay between consecutive requests in seconds
+    request_delay = 1.2  # Minimum delay between consecutive Spotify API requests in seconds
+    musicbrainz_delay = 6.0  # Minimum delay between consecutive MusicBrainz API requests in seconds
 
     def __init__(self):
         self.progress_bar = None
         self.sp = self.create_spotify_client()
+        self.mb = MusicBrainzAPI()  # Initialize MusicBrainz API client
+        self.last_mb_request_time = 0  # Track time of last MusicBrainz API request
+        self.artist_genre_cache = {}  # Cache to store artist genre mappings
         logging.info("Spotify Authentication Successful!")
 
     @backoff.on_exception(
@@ -245,8 +286,8 @@ class SpotifyPlaylistManager:
             ]
             
             auth_manager = SpotifyOAuth(
-                client_id="<your client id>",
-                client_secret="<your secret>",
+                client_id="your client id",
+                client_secret="your secret",
                 redirect_uri="http://127.0.0.1:8888/callback",
                 scope=" ".join(scopes),
                 cache_path=".spotify_token_cache"  # Cache token to avoid repeated auth
@@ -283,44 +324,84 @@ class SpotifyPlaylistManager:
         root.destroy()
         return file_path
 
+    def get_artist_genre(self, artist_name):
+        """
+        Get the primary genre for an artist using MusicBrainz API.
+        Respects rate limiting of 6 seconds between requests.
+        Returns a default genre if no genre information is found.
+        """
+        # Check cache first
+        if artist_name in self.artist_genre_cache:
+            return self.artist_genre_cache[artist_name]
+        
+        # Enforce rate limiting for MusicBrainz API
+        current_time = time.time()
+        time_since_last_request = current_time - self.last_mb_request_time
+        if time_since_last_request < self.musicbrainz_delay:
+            sleep_time = self.musicbrainz_delay - time_since_last_request
+            logging.info(f"Pausing for {sleep_time:.2f}s to respect MusicBrainz rate limit")
+            time.sleep(sleep_time)
+        
+        # Search for artist
+        logging.info(f"Searching MusicBrainz for artist: {artist_name}")
+        self.last_mb_request_time = time.time()
+        artist = self.mb.search_artist(artist_name)
+        
+        if not artist:
+            logging.warning(f"Artist '{artist_name}' not found in MusicBrainz")
+            self.artist_genre_cache[artist_name] = "Miscellaneous"
+            return "Miscellaneous"
+        
+        # Get genres for artist
+        time_since_last_request = time.time() - self.last_mb_request_time
+        if time_since_last_request < self.musicbrainz_delay:
+            sleep_time = self.musicbrainz_delay - time_since_last_request
+            logging.info(f"Pausing for {sleep_time:.2f}s to respect MusicBrainz rate limit")
+            time.sleep(sleep_time)
+        
+        self.last_mb_request_time = time.time()
+        genres = self.mb.get_artist_genres(artist['id'])
+        
+        if not genres:
+            logging.warning(f"No genres found for '{artist_name}'")
+            self.artist_genre_cache[artist_name] = "Miscellaneous"
+            return "Miscellaneous"
+        
+        # Use the first genre as primary
+        primary_genre = genres[0].title()
+        logging.info(f"Found genre for '{artist_name}': {primary_genre}")
+        self.artist_genre_cache[artist_name] = primary_genre
+        return primary_genre
+
     def read_artist_genres(self, filename):
-        """Read artists from JSON file without using MusicBrainz API."""
+        """Read artists from JSON file and organize by genre."""
         try:
             with open(filename, 'r') as file:
                 data = json.load(file)
             
-            # Collect all inspired artists across all keys
-            all_inspired_artists = []
+            # Dictionary to map genres to artists
+            genre_artists = defaultdict(list)
+            
+            # Process source artists and their inspired artists
             for key_artist, inspired_artists in data.items():
-                # Only add the values (inspired artists), not the keys (source artists)
-                all_inspired_artists.extend(inspired_artists)
+                # Get genre for the key artist
+                genre = self.get_artist_genre(key_artist)
+                
+                # Add inspired artists to this genre
+                for artist in inspired_artists:
+                    if artist not in genre_artists[genre]:
+                        genre_artists[genre].append(artist)
             
-            # Remove any duplicates while preserving order
-            unique_artists = []
-            seen = set()
-            for artist in all_inspired_artists:
-                if artist not in seen:
-                    seen.add(artist)
-                    unique_artists.append(artist)
+            # Log summary of genres and artists
+            total_artists = sum(len(artists) for artists in genre_artists.values())
+            logging.info(f"Found {len(genre_artists)} genres with {total_artists} total artists")
+            for genre, artists in genre_artists.items():
+                logging.info(f"Genre '{genre}': {len(artists)} artists")
             
-            # Group artists into playlists (approximately 50 artists per playlist)
-            playlist_artists = {}
-            artists_per_playlist = 50
-            playlist_count = max(1, (len(unique_artists) + artists_per_playlist - 1) // artists_per_playlist)
-            
-            for i in range(playlist_count):
-                start_idx = i * artists_per_playlist
-                end_idx = min((i + 1) * artists_per_playlist, len(unique_artists))
-                playlist_name = f"Playlist {i+1}"
-                playlist_artists[playlist_name] = unique_artists[start_idx:end_idx]
-            
-            logging.info(f"Found {len(unique_artists)} unique inspired artists")
-            logging.info(f"Created {len(playlist_artists)} playlists")
-            
-            return playlist_artists
+            return genre_artists
         except Exception as e:
             logging.error(f"Error reading JSON file: {e}")
-            return {}
+            return defaultdict(list)
 
     @backoff.on_exception(
         backoff.expo, 
@@ -381,89 +462,87 @@ class SpotifyPlaylistManager:
         logging.error(f"Failed after {retry_count} retries")
         return None
 
-    def generate_playlists_by_genre(self, playlist_artists):
+    def generate_playlists_by_genre(self, genre_artists):
         all_playlists = defaultdict(list)
         
-        # Convert the data structure to be compatible with the existing code
-        artist_to_playlist = {artist: playlist 
-                             for playlist, artists in playlist_artists.items() 
-                             for artist in artists}
-        
-        # Set up custom logging that works with the progress bar
-        root_logger = logging.getLogger()
-        for handler in root_logger.handlers[:]:
-            root_logger.removeHandler(handler)
-        
-        # Keep track of tracks per playlist for debug mode
-        debug_track_count = defaultdict(int)
+        # Collect all tracks across all artists first
+        all_tracks = []
         debug_artists_processed = 0
+
+        # Get total number of artists to process
+        total_artists = sum(len(artists) for artists in genre_artists.values())
         
         # Initialize progress bar with total number of artists
-        total_artists = len(artist_to_playlist)
         # Ensure we have at least one artist to process (avoid division by zero)
         if total_artists == 0:
             total_artists = 1
-            
+                
         self.progress_bar = ProgressBar(total_artists)
-        
-        # Set up the log handler with our progress bar
-        log_handler = ProgressBarLogHandler(self.progress_bar)
-        root_logger.addHandler(log_handler)
+        current_artist = 0
 
-        # Process ALL artists from the JSON file
-        for i, (artist, playlist) in enumerate(artist_to_playlist.items()):
-            logging.info(f"Organising tracks for artist: {artist}")
-            playlist, tracks = self.organise_artist_tracks(artist, playlist)
+        # Process all artists by genre
+        for genre, artists in genre_artists.items():
+            logging.info(f"Processing artists in genre: {genre}")
+            genre_tracks = []
             
-            if tracks:
-                all_playlists[playlist].extend(tracks)
-                debug_track_count[playlist] += len(tracks)
-                logging.info(f"Added {len(tracks)} tracks from {artist} to '{playlist}'")
-                logging.info(f"'{playlist}' now has {debug_track_count[playlist]} tracks total")
+            for artist in artists:
+                logging.info(f"Organizing tracks for artist: {artist}")
+                tracks = self.organise_artist_tracks(artist)
+                
+                if tracks:
+                    genre_tracks.extend(tracks)
+                    debug_artists_processed += 1
+                
+                # Update progress bar
+                current_artist += 1
+                self.progress_bar.update(current_artist, self.request_delay)
+                
+                # Update total if needed (safety check)
+                if current_artist > self.progress_bar.total:
+                    self.progress_bar.total = current_artist + 5  # Add extra room
             
-            debug_artists_processed += 1
-            
-            # Update progress bar
-            self.progress_bar.update(i + 1, self.request_delay)
-            
-            # Update total if needed
-            if i + 1 > self.progress_bar.total:
-                self.progress_bar.total = i + 5  # Add extra room
-        
+            # Only add playlists with enough tracks
+            if len(genre_tracks) >= 20:
+                # Shuffle tracks within genre
+                random.shuffle(genre_tracks)
+                
+                # Use genre name for playlist
+                playlist_name = f"{genre} Mix"
+                
+                # Add up to 75 tracks per playlist
+                all_playlists[playlist_name] = genre_tracks[:75]
+                
+                # Handle additional playlists if needed
+                if len(genre_tracks) > 75:
+                    chunks = [genre_tracks[i:i+75] for i in range(75, len(genre_tracks), 75)]
+                    for i, chunk in enumerate(chunks, 1):
+                        if len(chunk) >= 20:  # Minimum tracks threshold
+                            all_playlists[f"{genre} Mix {i+1}"] = chunk
+            else:
+                logging.warning(f"Not enough tracks for genre '{genre}' (found {len(genre_tracks)}, need at least 20)")
+
         # Debug summary
-        logging.info(f"DEBUG MODE: Processed {debug_artists_processed} artists")
-        for playlist, count in debug_track_count.items():
-            logging.info(f"DEBUG MODE: '{playlist}' has {count} tracks")
-            
+        logging.info(f"Processed {debug_artists_processed} artists")
+        logging.info(f"Total playlists to create: {len(all_playlists)}")
+        for name, tracks in all_playlists.items():
+            logging.info(f"Playlist '{name}': {len(tracks)} tracks")
+
         # Ensure progress shows 100% at the end
         self.progress_bar.update(self.progress_bar.total)
         
-        # Process all playlists that have any tracks
-        valid_playlists = {playlist: tracks for playlist, tracks in all_playlists.items() if tracks}
-        if not valid_playlists:
+        if not all_playlists:
             logging.warning("No tracks were found for any artists")
             return
-            
-        logging.info(f"Creating {len(valid_playlists)} playlists")
-        
-        # For each playlist, limit to 100 tracks but don't require a minimum
-        for playlist, tracks in valid_playlists.items():
-            track_count = len(tracks)
-            if track_count > 0:
-                logging.info(f"Creating playlist '{playlist}' with {track_count} tracks")
-                if track_count > 100:
-                    logging.info(f"Limiting to 100 tracks for '{playlist}'")
-                    random.shuffle(tracks)
-                    valid_playlists[playlist] = tracks[:100]
                 
         # Create the playlists in Spotify
-        self.create_playlists_in_spotify(valid_playlists)
+        self.create_playlists_in_spotify(all_playlists)
         
         # Clean up progress bar when finished
         if self.progress_bar:
             self.progress_bar.cleanup()
 
-    def organise_artist_tracks(self, artist, playlist):
+    def organise_artist_tracks(self, artist):
+        """Get top tracks for an artist"""
         artist_id = self.retry_on_rate_limit(self.sp.search, q=f'artist:{artist}', type='artist', limit=1)
 
         if artist_id and 'artists' in artist_id and artist_id['artists']['items']:
@@ -471,8 +550,8 @@ class SpotifyPlaylistManager:
             tracks = self.retry_on_rate_limit(self.sp.artist_top_tracks, artist_id)
             if tracks and 'tracks' in tracks:
                 track_ids = [track['id'] for track in tracks['tracks'][:5]]
-                return playlist, track_ids
-        return playlist, []
+                return track_ids
+        return []
 
     def create_playlists_in_spotify(self, all_playlists):
         try:
@@ -520,7 +599,7 @@ class SpotifyPlaylistManager:
             # First create an empty playlist
             logging.info(f"Creating empty playlist '{playlist_name}'")
             playlist = self.sp.user_playlist_create(user_id, playlist_name, public=True, 
-                                                  description="Debug playlist created by SpotifyPlaylistManager")
+                                                  description=f"Genre playlist created by SpotifyPlaylistManager")
             playlist_id = playlist['id']
             
             # Log playlist details
@@ -563,21 +642,34 @@ class SpotifyPlaylistManager:
 
 
 def main():
-    # Configure basic logging
+    # Configure basic logging with INFO level
     logging.basicConfig(
         level=logging.INFO,
         format='%(message)s',
-        handlers=[logging.StreamHandler()]
+        handlers=[logging.StreamHandler(sys.stdout)]
     )
+    
+    # Set a custom formatter for console output
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(CustomLogFormatter())
+    
+    # Get the root logger and remove any existing handlers
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Add the new console handler
+    root_logger.addHandler(console_handler)
+    root_logger.setLevel(logging.INFO)
     
     try:
         manager = SpotifyPlaylistManager()
         file_path = manager.select_json_file()
         if file_path:
-            # Now using the modified function that doesn't use MusicBrainz
-            playlist_artists = manager.read_artist_genres(file_path)
-            if playlist_artists:
-                manager.generate_playlists_by_genre(playlist_artists)
+            # Now using the genre-based function
+            genre_artists = manager.read_artist_genres(file_path)
+            if genre_artists:
+                manager.generate_playlists_by_genre(genre_artists)
             else:
                 logging.error("No valid artists found in the JSON file.")
         else:
