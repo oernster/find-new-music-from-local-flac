@@ -34,5 +34,4 @@ The Deezer App doesn't support API usage currently for developers so this has to
 ## How to create the exe
 
 - ```python buildexe.py``` - This will create an executable file runnable on Windows in a subdirectory called dist.
-- Copy `PlaylistGenerator.exe` to your desired launch location.
 - Run the `PlaylistGenerator.exe` created program.
