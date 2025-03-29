@@ -4,7 +4,7 @@ import sys
 import shutil
 
 def create_manifest_file():
-    """Create the application manifest file"""
+    """Create a simpler application manifest file"""
     manifest_content = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
@@ -21,11 +21,6 @@ def create_manifest_file():
       </requestedPrivileges>
     </security>
   </trustInfo>
-  <application>
-    <windowsSettings>
-      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
-    </windowsSettings>
-  </application>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity
@@ -68,7 +63,7 @@ def main():
 
     icon_path = "playlistgenerator.ico"
     if not os.path.exists(icon_path):
-        print("Warning: playlistgenerator.ico not found")
+        print(f"Error: {icon_path} not found. This icon is required for the application.")
         return
     
     print(f"Found ICO icon: {icon_path}")
@@ -76,7 +71,7 @@ def main():
     # Create manifest file
     manifest_path = create_manifest_file()
     
-    # Build PyInstaller command
+    # Build PyInstaller command - using a simplified approach
     cmd = [
         "pyinstaller",
         "--noconfirm",
@@ -85,11 +80,15 @@ def main():
         "--windowed",
         "--hidden-import=PyQt5.sip",
         "--hidden-import=PyQt5.QtSvg",
-        f"--add-binary={icon_path};.",  # Ensure semicolon is used as the path separator for Windows
+        f"--add-data={icon_path};.",  # For non-Windows use colon instead of semicolon
         f"--icon={icon_path}",
-        "--log-level=DEBUG",
-        "spotifylauncher.py"  # Ensure main script is included directly
+        "--manifest", manifest_path,
+        "--version-file=version.txt" if os.path.exists("version.txt") else "",
+        "spotifylauncher.py"
     ]
+    
+    # Remove empty options
+    cmd = [option for option in cmd if option]
     
     print("\nRunning command:")
     print(" ".join(cmd))
@@ -99,6 +98,20 @@ def main():
         subprocess.check_call(cmd)
         print("\nBuild completed successfully!")
         print("Executable is in the 'dist' folder.")
+        
+        # Copy icon to the dist folder for extra insurance
+        print("Copying icon file to dist folder...")
+        shutil.copy(icon_path, os.path.join("dist", icon_path))
+        
+        # Additional info for Windows users
+        if os.name == 'nt':
+            print("\nImportant: If you've run previous versions of this app,")
+            print("you may need to clear the Windows icon cache to see the new icon.")
+            print("Instructions to clear icon cache:")
+            print("1. Close all File Explorer windows")
+            print("2. Open Task Manager and end the Explorer.exe process")
+            print("3. From Task Manager, go to File > Run new task")
+            print("4. Enter 'explorer.exe' and click OK to restart Explorer")
     except subprocess.CalledProcessError as e:
         print(f"\nError building executable: {e}")
     except FileNotFoundError:

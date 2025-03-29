@@ -1,61 +1,78 @@
+"""
+Music Discovery module for finding new artists based on your FLAC library.
+"""
+
 import argparse
 import json
 import time
-import re
 import os
 import sys
-import io
 import random
 import tkinter as tk
 from tkinter import filedialog
-import requests
-from colorama import init, Fore, Back, Style
-from typing import Dict, List, Optional, Any, Set, Tuple, Callable
-from abc import ABC, abstractmethod
-from musicbrainz import MusicBrainzAPI, MusicDatabase, normalize_artist_name
-from libraryscanner import MusicLibraryScanner, FlacLibraryScanner
+from pathlib import Path
+from colorama import Fore, Style, init
+from typing import Dict, List, Optional, Set, Tuple
+from collections import defaultdict
+
+from libraryscanner import MusicLibraryScanner, ProgressTrackingFlacScanner
+from musicbrainz import MusicBrainzAPI, normalize_artist_name
 
 
 # Fix console encoding issues on Windows
 if sys.platform == 'win32':
-    # Configure UTF-8 mode
-    if hasattr(sys, 'set_utf8_mode'):
-        sys.set_utf8_mode(True)
-    
     # Force stdin/stdout to use UTF-8
+    import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-
-# Also add an alternative print_banner function that you can use if needed
-def print_banner_safe():
-    """Print a simple ASCII banner without Unicode characters"""
-    banner = """
-    ***************************************
-    *                                     *
-    *        MUSIC DISCOVERY TOOL         *
-    *                                     *
-    ***************************************
-    """
-    print(banner)
-
-# Replace your current print_banner function with this if needed
-def print_banner():
-    try:
-        # Try to print the original fancy banner
-        # Your existing banner code here
-        banner = "..." # Your existing banner variable
-        print(banner)
-    except UnicodeEncodeError:
-        # Fall back to safe ASCII banner if the fancy one fails
-        print_banner_safe()
 
 # Initialize colorama
 init(autoreset=True)
 
-## Constants
-BASE_REQUEST_DELAY = 4  # seconds between API requests
-DEFAULT_RECOMMENDATION_LIMIT = 50  # Increased to get more recommendations
-DEFAULT_EMAIL = "oliverjernster@hotmail.com"  # default email for MusicBrainz API
+# Constants
+DEFAULT_RECOMMENDATION_LIMIT = 50
+DEFAULT_EMAIL = "oliverjernster@hotmail.com"  # Default email for MusicBrainz API
+
+
+class JsonFilePersistence:
+    """Save recommendations to a JSON file."""
+    
+    def __init__(self, output_file: Optional[str] = None):
+        """
+        Initialize the JSON file persistence.
+        
+        Args:
+            output_file (Optional[str]): Path to save recommendations to (None to skip saving)
+        """
+        self.output_file = output_file
+    
+    def save(self, recommendations: Dict[str, List[str]]) -> None:
+        """
+        Save recommendations to a JSON file.
+        
+        Args:
+            recommendations (Dict[str, List[str]]): Dictionary of recommendations
+        """
+        if not self.output_file:
+            return
+            
+        try:
+            # Create the directory if it doesn't exist
+            os.makedirs(os.path.dirname(os.path.abspath(self.output_file)), exist_ok=True)
+            
+            # Ensure no duplicate recommendations exist before saving
+            deduplicated_recommendations = {}
+            
+            for artist, similar_artists in recommendations.items():
+                # Convert to a dict and back to a list to remove any duplicates
+                unique_artists = list(dict.fromkeys(similar_artists))
+                deduplicated_recommendations[artist] = unique_artists
+            
+            with open(self.output_file, 'w', encoding='utf-8') as f:
+                json.dump(deduplicated_recommendations, f, indent=2)
+            print(f"\n{Fore.GREEN}Recommendations saved to {self.output_file}{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}Error saving recommendations: {e}{Style.RESET_ALL}")
 
 
 def create_comprehensive_library_exclusion_set(library_artists: Set[str]) -> Set[str]:
@@ -63,10 +80,10 @@ def create_comprehensive_library_exclusion_set(library_artists: Set[str]) -> Set
     Create a comprehensive set of library artists with multiple variations.
     
     Args:
-        library_artists: Original set of library artists
+        library_artists (Set[str]): Original set of library artists
     
     Returns:
-        Expanded set of library artists with multiple matching variations
+        Set[str]: Expanded set of library artists with multiple matching variations
     """
     comprehensive_set = set()
     
@@ -88,35 +105,10 @@ def create_comprehensive_library_exclusion_set(library_artists: Set[str]) -> Set
         comprehensive_set.update(set(variations))
     
     print(f"{Fore.CYAN}Total library exclusion variations: {len(comprehensive_set)}{Style.RESET_ALL}")
-    print(f"{Fore.YELLOW}Sample exclusion entries: {list(comprehensive_set)[:10]}{Style.RESET_ALL}")
+    if comprehensive_set:
+        print(f"{Fore.YELLOW}Sample exclusion entries: {list(comprehensive_set)[:10]}{Style.RESET_ALL}")
     
     return comprehensive_set
-
-
-def filter_library_artists(recommendations: Dict[str, List[str]], library_artists: Set[str]) -> Dict[str, List[str]]:
-    """
-    Filter out library artists from recommendations with more lenient matching.
-    
-    Args:
-        recommendations: Dictionary of source artists to recommended artists
-        library_artists: Set of library artists to exclude
-    
-    Returns:
-        Filtered recommendations with library artists removed
-    """
-    filtered_recommendations = {}
-    
-    for source_artist, recommended_artists in recommendations.items():
-        # Filter out library artists from recommendations
-        filtered_recs = [
-            rec for rec in recommended_artists 
-            if not is_artist_in_library(rec, library_artists)
-        ]
-        
-        if filtered_recs:
-            filtered_recommendations[source_artist] = filtered_recs
-    
-    return filtered_recommendations
 
 
 def should_exclude_artist(artist_name: str) -> bool:
@@ -124,10 +116,10 @@ def should_exclude_artist(artist_name: str) -> bool:
     Check if an artist should be excluded from recommendations.
     
     Args:
-        artist_name: Name of the artist to check
+        artist_name (str): Name of the artist to check
         
     Returns:
-        True if artist should be excluded, False otherwise
+        bool: True if artist should be excluded, False otherwise
     """
     # Convert to lowercase for case-insensitive matching
     name_lower = artist_name.lower()
@@ -155,71 +147,16 @@ def should_exclude_artist(artist_name: str) -> bool:
     return False
 
 
-def is_library_artist(self, artist_name: str) -> bool:
-    """
-    Check if an artist is in the library using normalized matching.
+class MusicRecommendationService:
+    """Service for generating music recommendations based on library artists."""
     
-    Args:
-        artist_name: Name of the artist to check
-        
-    Returns:
-        True if artist is in library, False otherwise
-    """
-    if not artist_name:
-        return False
-
-    # Normalize the input artist name
-    normalized_artist = normalize_artist_name(artist_name)
-
-    # Check if normalized name is in the normalized artist set
-    return normalized_artist in self.library_artists_normalized
-
-
-
-class JsonFilePersistence:
-    """Save recommendations to a JSON file."""
-    
-    def __init__(self, output_file: Optional[str] = None):
-        """
-        Initialize the JSON file persistence.
-        
-        Args:
-            output_file: Path to save recommendations to (None to skip saving)
-        """
-        self.output_file = output_file
-    
-    def save(self, recommendations: Dict) -> None:
-        """Save recommendations to a JSON file."""
-        if not self.output_file:
-            return
-            
-        try:
-            # Create the directory if it doesn't exist
-            os.makedirs(os.path.dirname(os.path.abspath(self.output_file)), exist_ok=True)
-            
-            # Ensure no duplicate recommendations exist before saving
-            deduplicated_recommendations = {}
-            
-            for artist, similar_artists in recommendations.items():
-                # Convert to a set and back to a list to remove any duplicates
-                unique_artists = list(dict.fromkeys(similar_artists))
-                deduplicated_recommendations[artist] = unique_artists
-            
-            with open(self.output_file, 'w', encoding='utf-8') as f:
-                json.dump(deduplicated_recommendations, f, indent=2)
-            print(f"\n{Fore.GREEN}Recommendations saved to {self.output_file}{Style.RESET_ALL}")
-        except Exception as e:
-            print(f"{Fore.RED}Error saving recommendations: {e}{Style.RESET_ALL}")
-
-
-class SimpleMusicRecommendationService:
-    def __init__(self, music_db: MusicDatabase, library_artists: Set[str]):
+    def __init__(self, music_db: MusicBrainzAPI, library_artists: Set[str]):
         """
         Initialize recommendation service with library artists to exclude.
         
         Args:
-            music_db: Music database API
-            library_artists: Set of artists already in the library
+            music_db (MusicBrainzAPI): Music database API
+            library_artists (Set[str]): Set of artists already in the library
         """
         self.music_db = music_db
         
@@ -238,18 +175,19 @@ class SimpleMusicRecommendationService:
         }
         
         print(f"\n{Fore.CYAN}Total Library Artists: {len(self.library_artists_raw)}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}First 20 Library Artists:{Style.RESET_ALL}")
-        print(list(self.library_artists_raw)[:20])
+        if self.library_artists_raw:
+            print(f"{Fore.YELLOW}First 20 Library Artists:{Style.RESET_ALL}")
+            print(list(self.library_artists_raw)[:20])
 
     def is_library_artist(self, artist_name: str) -> bool:
         """
-        Check if an artist is in the library using normalized matching with extensive logging.
+        Check if an artist is in the library using normalized matching.
         
         Args:
-            artist_name: Name of the artist to check
+            artist_name (str): Name of the artist to check
             
         Returns:
-            True if artist is in library, False otherwise
+            bool: True if artist is in library, False otherwise
         """
         if not artist_name:
             print(f"{Fore.YELLOW}Empty artist name received by is_library_artist().{Style.RESET_ALL}")
@@ -268,17 +206,17 @@ class SimpleMusicRecommendationService:
         
         return False
 
-
-    def get_recommendations(self, source_artists: List[tuple], limit: int = 10) -> Dict[str, List[str]]:
+    def get_recommendations(self, source_artists: List[Tuple[str, int]], 
+                          limit: int = 10) -> Dict[str, List[str]]:
         """
-        Generate music recommendations with extensive logging.
+        Generate music recommendations.
         
         Args:
-            source_artists: List of (artist_name, count) tuples
-            limit: Maximum number of recommendations per artist (default 10)
+            source_artists (List[Tuple[str, int]]): List of (artist_name, count) tuples
+            limit (int): Maximum number of recommendations per artist (default 10)
         
         Returns:
-            Dictionary of recommendations
+            Dict[str, List[str]]: Dictionary of recommendations
         """
         recommendations = {}
         global_recommended_artists = set()
@@ -289,13 +227,23 @@ class SimpleMusicRecommendationService:
         valid_artists = [(artist, count) for artist, count in source_artists if not should_exclude_artist(artist)]
         print(f"{Fore.CYAN}Filtered {len(valid_artists)} valid artists for processing.{Style.RESET_ALL}")
 
+        # Shuffle the artists to get more varied recommendations
         random.shuffle(valid_artists)
-
-        for artist_name, _ in valid_artists:
+        
+        # Only process a limited number of artists for performance
+        max_artists = min(len(valid_artists), 100)  # Set reasonable limit
+        artists_to_process = valid_artists[:max_artists]
+        total_artists = len(artists_to_process)
+        
+        for idx, (artist_name, _) in enumerate(artists_to_process):
             try:
                 start_time = time.time()
                 
-                print(f"\n{Fore.WHITE}{Back.BLUE}=== PROCESSING: {artist_name} ==={Style.RESET_ALL}")
+                # Calculate and print progress
+                progress_percent = ((idx + 1) / total_artists) * 100
+                print(f"Progress: {progress_percent:.1f}% ({idx + 1}/{total_artists} artists)")
+                
+                print(f"\n{Fore.WHITE}{Style.BRIGHT}=== PROCESSING: {artist_name} ==={Style.RESET_ALL}")
                 
                 artist_info = self.music_db.search_artist(artist_name)
                 if not artist_info:
@@ -366,7 +314,10 @@ class SimpleMusicRecommendationService:
                 import traceback
                 traceback.print_exc()
 
-        print(f"\n{Fore.MAGENTA}{Back.WHITE}=== RECOMMENDATION SUMMARY ==={Style.RESET_ALL}")
+        # Print final progress
+        print(f"Progress: 100.0% ({total_artists}/{total_artists} artists)")
+        
+        print(f"\n{Fore.MAGENTA}{Style.BRIGHT}=== RECOMMENDATION SUMMARY ==={Style.RESET_ALL}")
         print(f"{Fore.CYAN}Total unique recommended artists: {len(global_recommended_artists)}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}Total source artists with recommendations: {len(recommendations)}{Style.RESET_ALL}")
         
@@ -381,34 +332,38 @@ class SimpleMusicRecommendationService:
         
         return recommendations
 
-       
+
 class MusicDiscoveryApp:
+    """Main application for music discovery."""
+    
     def __init__(
         self, 
         scanner: MusicLibraryScanner,
-        music_db: MusicDatabase,
+        music_db: MusicBrainzAPI,
         persistence: JsonFilePersistence
     ):
         """
-        Initialize the Music Discovery app with a simplified approach.
+        Initialize the Music Discovery app.
         
         Args:
-            scanner: Library scanner
-            music_db: Music database API
-            persistence: Output persistence
+            scanner (MusicLibraryScanner): Library scanner
+            music_db (MusicBrainzAPI): Music database API
+            persistence (JsonFilePersistence): Output persistence
         """
         self.scanner = scanner
         self.music_db = music_db
         self.persistence = persistence
 
-    def run(self, max_source_artists: Optional[int] = None):
+    def run(self, max_source_artists: Optional[int] = None) -> None:
         """
         Run the music discovery process.
         
         Args:
-            max_source_artists: Maximum number of source artists to process (None for entire library)
+            max_source_artists (Optional[int]): Maximum number of source artists to process 
+                                              (None for entire library)
         """
-        # Scan the library to get artists
+        # Phase 1: Scan the library to get artists
+        print(f"{Fore.CYAN}Phase 1: Scanning FLAC music library{Style.RESET_ALL}")
         library_artists = self.scanner.scan()
         
         if max_source_artists is not None:
@@ -417,8 +372,10 @@ class MusicDiscoveryApp:
         # Extract artist names from library_artists
         library_artist_names = {artist for artist, _ in library_artists}
         
+        # Phase 2: Generate recommendations
+        print(f"{Fore.CYAN}Phase 2: Generating music recommendations{Style.RESET_ALL}")
         # Create recommendation service
-        recommendation_service = SimpleMusicRecommendationService(
+        recommendation_service = MusicRecommendationService(
             music_db=self.music_db,
             library_artists=library_artist_names
         )
@@ -428,22 +385,31 @@ class MusicDiscoveryApp:
             library_artists
         )
         
-        # Save recommendations
+        # Phase 3: Save recommendations
+        print(f"{Fore.CYAN}Phase 3: Saving recommendations{Style.RESET_ALL}")
         self.persistence.save(recommendations)
         
         # Print summary
-        print(f"\n=== RECOMMENDATION SUMMARY ===")
-        print(f"Total recommendations: {len(recommendations)} artists")
-        for source, recs in recommendations.items():
-            print(f"{source}: {recs}")
+        print(f"\n{Fore.GREEN}=== RECOMMENDATION SUMMARY ==={Style.RESET_ALL}")
+        print(f"{Fore.CYAN}Total recommendations: {len(recommendations)} artists{Style.RESET_ALL}")
 
-                    
+
+def print_banner() -> None:
+    """Print a colorful banner."""
+    banner = f"""
+{Fore.CYAN}{Style.BRIGHT}╔═══════════════════════════════════════════════╗
+║  {Fore.YELLOW}FLAC Music Discovery App {Fore.WHITE}- Find New Artists  {Fore.CYAN}║
+╚═══════════════════════════════════════════════╝{Style.RESET_ALL}
+"""
+    print(banner)
+
+
 def browse_directory() -> Optional[str]:
     """
     Open a file browser dialog to select a directory.
     
     Returns:
-        Selected directory path or None if canceled
+        Optional[str]: Selected directory path or None if canceled
     """
     # Hide the main tkinter window
     root = tk.Tk()
@@ -461,17 +427,8 @@ def browse_directory() -> Optional[str]:
     return directory if directory else None
 
 
-def print_banner() -> None:
-    """Print a colorful banner."""
-    banner = f"""
-{Fore.CYAN}{Style.BRIGHT}╔═══════════════════════════════════════════════╗
-║  {Fore.YELLOW}FLAC Music Discovery App {Fore.WHITE}- Find New Artists  {Fore.CYAN}║
-╚═══════════════════════════════════════════════╝{Style.RESET_ALL}
-"""
-    print(banner)
-
-
 def main():
+    """Main entry point for the application."""
     print_banner()
     
     # Parse arguments
@@ -479,8 +436,10 @@ def main():
     parser.add_argument('--dir', type=str, help='Directory with music files')
     parser.add_argument('--output', type=str, default='./recommendations.json')
     parser.add_argument('--email', type=str, default=DEFAULT_EMAIL)
-    parser.add_argument('--max-artists', type=int, default=None, help='Maximum number of artists to process (leave empty for entire library)')
-    parser.add_argument('--save-in-music-dir', action='store_true', help='Save recommendations.json in the music directory')
+    parser.add_argument('--max-artists', type=int, default=None, 
+                       help='Maximum number of artists to process (leave empty for entire library)')
+    parser.add_argument('--save-in-music-dir', action='store_true', 
+                       help='Save recommendations.json in the music directory')
 
     args = parser.parse_args()
     
@@ -497,7 +456,7 @@ def main():
         print(f"{Fore.CYAN}Will save recommendations to music directory: {output_file}{Style.RESET_ALL}")
     
     # Create components
-    scanner = FlacLibraryScanner(music_dir)
+    scanner = ProgressTrackingFlacScanner(music_dir)  # Use the enhanced scanner
     music_db = MusicBrainzAPI(user_email=args.email)
     persistence = JsonFilePersistence(output_file=output_file)
     
@@ -509,10 +468,12 @@ def main():
     )
     
     try:
-        app.run()
+        app.run(args.max_artists)
         print(f"\nMusic discovery complete! Check {output_file}")
     except Exception as e:
         print(f"Error during execution: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == '__main__':

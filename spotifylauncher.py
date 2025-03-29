@@ -1,3 +1,7 @@
+"""
+Spotify Launcher - GUI Application for Music Discovery and Spotify Playlist Creation.
+"""
+
 import sys
 import os
 import subprocess
@@ -7,47 +11,71 @@ import threading
 import traceback
 import queue
 import re
-import random
-
+from typing import List, Optional, Set, Tuple
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLabel, 
-    QTextEdit, QMenuBar, QMenu, QAction, QMessageBox, QProgressBar, QStyleOptionProgressBar,
-    QStyle, QTabWidget, QSplitter
+    QTextEdit, QMenuBar, QMenu, QAction, QMessageBox, QProgressBar, QTabWidget
 )
-from PyQt5.QtGui import QIcon, QFont, QPixmap, QColor, QPainter, QLinearGradient, QPen
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRect, QPropertyAnimation, QEasingCurve
+from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 
 class ColourProgressBar(QProgressBar):
-    """Progress bar with color gradients that change based on completion percentage"""
+    """Progress bar with color gradients that accurately reflect completion percentage."""
+    
     def __init__(self, parent=None):
+        """Initialize the colored progress bar."""
         super().__init__(parent)
         self.setMinimumHeight(25)
-        self.updateStyleSheet(0)  # Make sure it's set to zero explicitly
-        self.setValue(0)          # Explicitly set initial value to 0
+        # Initialize with empty/gray styling
+        self.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid grey;
+                border-radius: 5px;
+                text-align: center;
+                font-weight: bold;
+                color: black;
+                height: 25px;
+                background-color: #f0f0f0;
+            }
+
+            QProgressBar::chunk {
+                background-color: #e0e0e0;
+                width: 10px;
+                margin: 0.5px;
+            }
+        """)
+        self.setValue(0)  # Explicitly set initial value
         
     def updateStyleSheet(self, value):
-        """Update the progress bar stylesheet based on progress percentage"""
-        if value == 0:
-            # Neutral color when no progress
-            color = "#e0e0e0"  # Ensure this is set correctly
+        """
+        Update the progress bar stylesheet based on progress percentage.
+        
+        Args:
+            value (int): Progress value (0-100)
+        """
+        # Define color ranges with exact boundaries
+        if value < 1:
+            # Empty/starting state
+            color = "#e0e0e0"  # Light gray
         elif value < 20:
-            # Red (start)
-            color = "red"
+            # Early progress - red
+            color = "#ff5a5a"
         elif value < 40:
-            # Orange
-            color = "orange"
+            # Quarter progress - orange
+            color = "#ff9933"
         elif value < 60:
-            # Yellow
-            color = "gold"
+            # Half progress - yellow
+            color = "#ffcc33" 
         elif value < 80:
-            # Light green
-            color = "yellowgreen"
+            # Three-quarters progress - light green
+            color = "#99cc33"
         else:
-            # Green (finish)
-            color = "limegreen"
-
+            # Near completion - green
+            color = "#66cc33"
+            
+        # Apply the stylesheet with the selected color
         self.setStyleSheet(f"""
             QProgressBar {{
                 border: 1px solid grey;
@@ -65,22 +93,44 @@ class ColourProgressBar(QProgressBar):
                 margin: 0.5px;
             }}
         """)
-
         
     def setValue(self, value):
-        """Override setValue to update the color gradient"""
-        super().setValue(value)
+        """
+        Override setValue to update the color gradient.
+        
+        Args:
+            value (int): Progress value
+        """
+        # Make sure we're getting integer values
+        if isinstance(value, float):
+            value = int(value)
+        
+        # Force a repaint at the correct value
         self.updateStyleSheet(value)
+        
+        # Call the parent implementation to update the actual value
+        super().setValue(value)
+        
+        # Force an update to ensure the UI reflects the change
+        self.update()
 
 
 class ScriptWorker(QThread):
-    """Worker thread for running Python scripts without blocking the UI"""
-    update_progress = pyqtSignal(int, str, str)  # Progress value, ETA string, status message
+    """Worker thread for running Python scripts without blocking the UI."""
+    
+    update_progress = pyqtSignal(int, str)  # Progress value, status message
     script_finished = pyqtSignal(bool)  # Success/failure
     output_text = pyqtSignal(str)  # Output text for debug log
     console_output = pyqtSignal(str)  # Console output for display
 
     def __init__(self, script_path, script_name):
+        """
+        Initialize the script worker.
+        
+        Args:
+            script_path (str): Path to the script
+            script_name (str): Name of the script for display
+        """
         super().__init__()
         self.script_path = script_path
         self.script_name = script_name
@@ -97,8 +147,6 @@ class ScriptWorker(QThread):
         self.progress_patterns = [
             # For ProgressBar updates (match percentage complete)
             re.compile(r'Progress.*?(\d+\.\d+)%'),
-            # For ETA updates
-            re.compile(r'ETA: (\d+[hm])?\s?(\d+[ms])'),
             # Look for "x/y artists" patterns to extract progress
             re.compile(r'Processed: (\d+)/(\d+) artists'),
             # Spotify playlist creation progress
@@ -117,8 +165,16 @@ class ScriptWorker(QThread):
             re.compile(r'Music discovery complete!')
         ]
 
-    def find_venv_python(self, script_dir):
-        """Find the Python executable in a virtual environment"""
+    def find_venv_python(self, script_dir: str) -> str:
+        """
+        Find the Python executable in a virtual environment.
+        
+        Args:
+            script_dir (str): Script directory to search for venv
+            
+        Returns:
+            str: Path to Python executable or "python" if not found
+        """
         # Try to locate virtual environment in the script directory
         if os.name == 'nt':  # Windows
             venv_paths = [
@@ -146,9 +202,7 @@ class ScriptWorker(QThread):
         return "python"
 
     def run(self):
-        """
-        Run the script in a separate thread with non-blocking I/O handling.
-        """
+        """Run the script in a separate thread with non-blocking I/O handling."""
         self.running = True
         self.start_time = time.time()
         
@@ -291,141 +345,95 @@ class ScriptWorker(QThread):
             self.script_finished.emit(False)
         finally:
             self.running = False
-    
-    def read_stdout(self):
-        """Read from process stdout in a separate thread"""
-        for line in iter(self.process.stdout.readline, ''):
-            if not self.running:
-                break
-                
-            line = line.strip()
-            if line:
-                self.output_text.emit(line)
-                self.console_output.emit(line)
-                
-                # Update progress based on progress patterns
-                self.update_progress_from_line(line)
-    
-    def read_stderr(self):
-        """Read from process stderr in a separate thread"""
-        for line in iter(self.process.stderr.readline, ''):
-            if not self.running:
-                break
-                
-            line = line.strip()
-            if line:
-                error_msg = f"ERROR: {line}"
-                self.output_text.emit(error_msg)
-                self.console_output.emit(error_msg)
 
-    def update_progress_from_line(self, line):
+    def update_progress_from_line(self, line: str) -> bool:
         """
-        Enhanced progress tracking with adaptive progress estimation.
+        Extract progress information from log lines with direct percentage extraction.
         
-        Key improvements:
-        - Identify meaningful progress indicators
-        - Increment progress conservatively
-        - Support various processing stages
+        Args:
+            line (str): Log line to process
+            
+        Returns:
+            bool: True if progress was updated, False otherwise
         """
         try:
-            # Adaptive progress patterns
-            progress_indicators = [
-                # Generic processing markers
-                r'(Processing|Searching|Analyzing|Generating|Retrieving)',
-                # Specific operation counters
-                r'(\d+)/(\d+)',  # Capture x/y progress
-                # Milestone markers
-                r'(Found|Created|Discovered|Processed)',
-                # Specific domain markers
-                r'(artist|track|playlist|genre)'
-            ]
-            
-            # Track unique operations to prevent over-incrementing
-            if not hasattr(self, '_processed_markers'):
-                self._processed_markers = set()
-            
-            # Conservative progress increment
-            increment = 0.1  # Small, consistent increment
-            
-            # Check if line matches any progress indicators
-            line_lower = line.lower()
-            for pattern in progress_indicators:
-                match = re.search(pattern, line_lower)
-                if match:
-                    # Check for actual numeric progress
-                    numeric_match = re.search(r'(\d+)/(\d+)', line)
-                    if numeric_match:
-                        # More precise progress calculation
-                        current, total = map(int, numeric_match.groups())
-                        precise_progress = (current / total) * 100
-                        # Use the more precise calculation
-                        increment = min(precise_progress - self.current_value, 1.0)
-                    
-                    # Ensure we don't process the same marker repeatedly
-                    if line not in self._processed_markers:
-                        self._processed_markers.add(line)
-                        
-                        # Increment progress
-                        self.current_value = min(99.9, self.current_value + increment)
-                        
-                        # Emit progress update
-                        eta_string = self.calculate_eta()
-                        status_message = line[:50] + "..." if len(line) > 50 else line
-                        self.update_progress.emit(
-                            int(self.current_value), 
-                            eta_string, 
-                            status_message
-                        )
-                        return
-            
-            # Fallback: small random increment if no specific markers found
-            if random.random() < 0.2:  # Only occasionally to prevent too frequent updates
-                self.current_value = min(99.9, self.current_value + 0.1)
-                eta_string = self.calculate_eta()
+            # First, detect transition to Phase 2 explicitly
+            if "starting playlist generation" in line.lower():
+                # Emit a special signal for Phase 2 start with 0 progress
+                self.output_text.emit("DETECTED PHASE TRANSITION TO PLAYLIST GENERATION")
                 self.update_progress.emit(
-                    int(self.current_value), 
-                    eta_string, 
-                    "Processing..."
+                    0,  # Start Phase 2 at 0%
+                    "phase2:" + line.strip()  # Add phase2: prefix to mark this as Phase 2
                 )
+                return True
+                
+            # Check for Phase 2 progress percentage patterns
+            if "organizing tracks for artist" in line.lower():
+                # This is definitely a Phase 2 message
+                self.update_progress.emit(
+                    self.current_value,
+                    "phase2:" + line.strip()  # Add phase2: prefix
+                )
+                return True
+            
+            # Direct check for progress percentages during playlist generation
+            if "progress:" in line.lower() and ("artist" in line.lower() or "track" in line.lower()):
+                artists_match = re.search(r'Progress: (\d+\.\d+)% \((\d+)/(\d+)', line)
+                if artists_match:
+                    exact_percentage = float(artists_match.group(1))
+                    current = int(artists_match.group(2))
+                    total = int(artists_match.group(3))
+                    
+                    # Store current progress value
+                    self.current_value = int(exact_percentage)
+                    
+                    # Check if this is likely a Phase 2 progress message
+                    if "starting playlist generation" in line.lower() or "organizing tracks" in line.lower():
+                        self.update_progress.emit(
+                            self.current_value,
+                            "phase2:Processing artists: " + str(current) + " of " + str(total)
+                        )
+                    else:
+                        # Normal progress update for Phase 1
+                        self.update_progress.emit(
+                            self.current_value,
+                            f"Processing artists: {current} of {total}"
+                        )
+                    return True
+            
+            # For all other messages, check if they're related to Spotify processing
+            if "spotify" in self.script_name.lower():
+                # File selection
+                if "please select the source json file" in line.lower():
+                    self.update_progress.emit(0, "Selecting JSON file...")
+                    return True
+                
+                # JSON file initialization
+                if "json file contains" in line.lower():
+                    match = re.search(r'JSON file contains (\d+) total', line)
+                    if match:
+                        count = match.group(1)
+                        self.update_progress.emit(10, f"JSON file contains {count} artists")
+                        return True
+                
+                # Phase changes - Emit with current progress value and the status
+                if "searching musicbrainz for artist" in line.lower() or "pausing for" in line.lower() or "found genre" in line.lower():
+                    # Important to emit current progress value (don't reset to 0)
+                    self.update_progress.emit(self.current_value, line.strip())
+                    return True
+            
+            # Don't update progress for other lines
+            return False
         
         except Exception as e:
-            # Log any errors in progress tracking
+            # Log errors in progress tracking
             error_msg = f"Error in progress tracking: {str(e)}"
             self.output_text.emit(error_msg)
             self.console_output.emit(error_msg)
-            
-    def calculate_eta(self):
-        """Calculate estimated time to completion based on progress so far"""
-        if self.current_value <= 0 or self.start_time is None:
-            return "Calculating..."
-            
-        elapsed = time.time() - self.start_time
-        if elapsed < 1:  # Less than 1 second elapsed
-            return "Calculating..."
-            
-        progress_fraction = self.current_value / 100.0
-        if progress_fraction < 0.01:  # Less than 1% progress
-            return "Calculating..."
-            
-        total_estimated_time = elapsed / progress_fraction
-        remaining_seconds = total_estimated_time - elapsed
-        
-        # Format the remaining time
-        if remaining_seconds < 0:
-            return "Almost done..."
-            
-        hours, remainder = divmod(int(remaining_seconds), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        
-        if hours > 0:
-            return f"{hours}h {minutes}m {seconds}s"
-        elif minutes > 0:
-            return f"{minutes}m {seconds}s"
-        else:
-            return f"{seconds}s"
+            return False
 
     def stop(self):
-        """Stop the running process safely"""
+        """Stop the running process safely."""
         self.running = False
         if self.process:
             try:
@@ -449,14 +457,19 @@ class ScriptWorker(QThread):
 
 
 class SpotifyLauncher(QMainWindow):
+    """Main window for the Spotify Launcher application."""
+    
     def __init__(self):
+        """Initialize the Spotify Launcher."""
         super().__init__()
+        
+        self.phase2_active = False
         
         # Configure window
         self.setWindowTitle("Playlist Generator")
         self.setMinimumSize(700, 700)  # Larger window to accommodate console output
         
-        # Set up central widget with splitter
+        # Set up central widget
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         
@@ -497,12 +510,10 @@ class SpotifyLauncher(QMainWindow):
         self.discovery_progress.setTextVisible(False)  # Hide text
         discovery_layout.addWidget(self.discovery_progress)
         
-        # Status and ETA
+        # Status
         discovery_status_layout = QHBoxLayout()
         self.discovery_status = QLabel("Ready")
-        self.discovery_eta = QLabel("ETA: --")
         discovery_status_layout.addWidget(self.discovery_status)
-        discovery_status_layout.addWidget(self.discovery_eta, alignment=Qt.AlignRight)
         discovery_layout.addLayout(discovery_status_layout)
         
         upper_layout.addLayout(discovery_layout)
@@ -520,21 +531,44 @@ class SpotifyLauncher(QMainWindow):
         self.spotify_button.clicked.connect(self.launch_spotify_client)
         spotify_layout.addWidget(self.spotify_button)
         
-        # Progress bar
-        self.spotify_progress = ColourProgressBar()
-        self.spotify_progress.setRange(0, 100)
-        self.spotify_progress.setValue(0)
-        self.spotify_progress.setFormat("")  # Clear the default format
-        self.spotify_progress.setTextVisible(False)  # Hide text
-        spotify_layout.addWidget(self.spotify_progress)
+        # First phase label
+        self.spotify_phase1_label = QLabel("Phase 1: Artist Genre Classification")
+        spotify_layout.addWidget(self.spotify_phase1_label)
         
-        # Status and ETA
-        spotify_status_layout = QHBoxLayout()
-        self.spotify_status = QLabel("Ready")
-        self.spotify_eta = QLabel("ETA: --")
-        spotify_status_layout.addWidget(self.spotify_status)
-        spotify_status_layout.addWidget(self.spotify_eta, alignment=Qt.AlignRight)
-        spotify_layout.addLayout(spotify_status_layout)
+        # First progress bar - for artist genre classification
+        self.spotify_progress1 = ColourProgressBar()
+        self.spotify_progress1.setRange(0, 100)
+        self.spotify_progress1.setValue(0)
+        self.spotify_progress1.setFormat("")
+        self.spotify_progress1.setTextVisible(False)
+        spotify_layout.addWidget(self.spotify_progress1)
+        
+        # First phase status
+        spotify_status1_layout = QHBoxLayout()
+        self.spotify_status1 = QLabel("Ready")
+        spotify_status1_layout.addWidget(self.spotify_status1)
+        spotify_layout.addLayout(spotify_status1_layout)
+        
+        # Add a small spacer
+        spotify_layout.addSpacing(5)
+        
+        # Second phase label
+        self.spotify_phase2_label = QLabel("Phase 2: Playlist Generation")
+        spotify_layout.addWidget(self.spotify_phase2_label)
+        
+        # Second progress bar - for playlist generation
+        self.spotify_progress2 = ColourProgressBar()
+        self.spotify_progress2.setRange(0, 100)
+        self.spotify_progress2.setValue(0)
+        self.spotify_progress2.setFormat("")
+        self.spotify_progress2.setTextVisible(False)
+        spotify_layout.addWidget(self.spotify_progress2)
+        
+        # Second phase status
+        spotify_status2_layout = QHBoxLayout()
+        self.spotify_status2 = QLabel("Ready")
+        spotify_status2_layout.addWidget(self.spotify_status2)
+        spotify_layout.addLayout(spotify_status2_layout)
         
         upper_layout.addLayout(spotify_layout)
         
@@ -583,28 +617,8 @@ class SpotifyLauncher(QMainWindow):
         # Hide debug tab by default
         self.toggle_debug_tab(False)
 
-    def load_set_icon(self):
-        """Load and set the application icon"""
-        try:
-            # Try to find the ICO file first
-            icon_path = os.path.join(self.get_base_dir(), "playlistgenerator.ico")
-            
-            # If ICO not found, fall back to SVG
-            if not os.path.exists(icon_path):
-                icon_path = os.path.join(self.get_base_dir(), "playlistgenerator.svg")
-            
-            if os.path.exists(icon_path):
-                self.log_status(f"Loading icon from: {icon_path}")
-                app_icon = QIcon(icon_path)
-                self.setWindowIcon(app_icon)
-                self.log_status("Icon loaded successfully")
-            else:
-                self.log_status("No icon file found")
-        except Exception as e:
-            self.log_status(f"Error loading icon: {str(e)}")
-
     def setup_menu(self):
-        """Set up the menu bar with options"""
+        """Set up the menu bar with options."""
         menubar = self.menuBar()
         
         # View menu
@@ -634,44 +648,14 @@ class SpotifyLauncher(QMainWindow):
         view_gpl_action = QAction('View GPL3 Licence', self)
         view_gpl_action.triggered.connect(lambda: webbrowser.open('https://www.gnu.org/licenses/gpl-3.0.html'))
         help_menu.addAction(view_gpl_action)
-        
-        # Testing menu - only in development mode
-        if not getattr(sys, 'frozen', False):
-            test_menu = menubar.addMenu('Testing')
-            test_music_action = QAction('Run Music Discovery Directly', self)
-            test_music_action.triggered.connect(self.test_run_music_discovery)
-            test_menu.addAction(test_music_action)
-
-    def test_run_music_discovery(self):
-        """Directly run music discovery for testing"""
-        script_path = self.find_script("musicdiscovery.py")
-        if not script_path:
-            self.log_status("ERROR: Could not find musicdiscovery.py!")
-            return
-            
-        # Direct run in a subprocess
-        self.log_status(f"Directly running: {script_path}")
-        try:
-            # Run script directly in current console
-            process = subprocess.Popen(
-                ["python", script_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            # Simple output handling for testing
-            stdout, stderr = process.communicate()
-            self.log_status(f"OUTPUT:\n{stdout}")
-            if stderr:
-                self.log_status(f"ERRORS:\n{stderr}")
-                
-            self.log_status(f"Process exited with code: {process.returncode}")
-        except Exception as e:
-            self.log_status(f"Error in direct run: {str(e)}")
 
     def toggle_debug_tab(self, checked):
-        """Toggle the visibility of the debug tab"""
+        """
+        Toggle the visibility of the debug tab.
+        
+        Args:
+            checked (bool): Whether to show the debug tab
+        """
         # The tab is always there, we just need to handle showing/hiding it
         if checked:
             if self.output_tabs.indexOf(self.debug_output) == -1:
@@ -683,8 +667,7 @@ class SpotifyLauncher(QMainWindow):
                 
     def toggle_console_output(self, checked):
         """
-        Toggle the visibility of the console output tabs while ensuring 
-        text progress indicators remain hidden.
+        Toggle the visibility of the console output tabs.
         
         Args:
             checked (bool): Whether console output should be visible
@@ -694,32 +677,35 @@ class SpotifyLauncher(QMainWindow):
         else:
             self.output_tabs.setVisible(False)
         
-        # Ensure no text-based progress is shown
-        self.spotify_status.setVisible(checked)
-        self.spotify_eta.setVisible(checked)
+        # Ensure no text-based progress is shown for all progress bars
+        self.spotify_status1.setVisible(checked)
+        self.spotify_status2.setVisible(checked)
         self.discovery_status.setVisible(checked)
-        self.discovery_eta.setVisible(checked)
+        
+        # Also toggle visibility of phase labels
+        self.spotify_phase1_label.setVisible(checked)
+        self.spotify_phase2_label.setVisible(checked)
         
         # Adjust window size to accommodate changes
         self.adjustSize()
         
     def show_about(self):
-        """Show information about the application using a simple message box"""
+        """Show information about the application."""
         about_text = """
-Playlist Generator
-By Oliver Ernster
+    Playlist Generator
+    By Oliver Ernster
 
-A simple tool for discovering music and 
-generating Spotify playlists.
+    A simple tool for discovering music and 
+    generating Spotify playlists.
 
-This application provides easy access to:
-• Music Discovery Tool
-• Spotify Client Tool
+    This application provides easy access to:
+    • Music Discovery Tool
+    • Spotify Client Tool
 
-All dependencies are bundled with this application.
+    All dependencies are bundled with this application.
 
-Licensed under GPL-3.0
-Copyright © 2025 Oliver Ernster
+    Licensed under GPL-3.0
+    Copyright © 2025 Oliver Ernster
         """
         
         # Create message box
@@ -737,15 +723,47 @@ Copyright © 2025 Oliver Ernster
                 icon_path = os.path.join(self.get_base_dir(), "playlistgenerator.svg")
             
             if os.path.exists(icon_path):
+                # Create QIcon from the icon file
                 app_icon = QIcon(icon_path)
-                about_dialog.setIconPixmap(app_icon.pixmap(64, 64))
+                
+                # Set both the dialog icon and pixmap
+                about_dialog.setWindowIcon(app_icon)
+                
+                # For the large icon in the dialog content, use the 64x64 size explicitly
+                pixmap = app_icon.pixmap(64, 64)
+                about_dialog.setIconPixmap(pixmap)
         except Exception as e:
             self.log_status(f"Error setting about dialog icon: {str(e)}")
         
         about_dialog.exec_()
 
-    def get_base_dir(self):
-        """Get the directory where the executable is located"""
+    def load_set_icon(self):
+        """Load and set the application icon."""
+        try:
+            # Try to find the ICO file first
+            icon_path = os.path.join(self.get_base_dir(), "playlistgenerator.ico")
+            
+            # If ICO not found, fall back to SVG
+            if not os.path.exists(icon_path):
+                icon_path = os.path.join(self.get_base_dir(), "playlistgenerator.svg")
+            
+            if os.path.exists(icon_path):
+                self.log_status(f"Loading icon from: {icon_path}")
+                app_icon = QIcon(icon_path)
+                self.setWindowIcon(app_icon)
+                self.log_status("Icon loaded successfully")
+            else:
+                self.log_status("No icon file found")
+        except Exception as e:
+            self.log_status(f"Error loading icon: {str(e)}")
+
+    def get_base_dir(self) -> str:
+        """
+        Get the directory where the executable is located.
+        
+        Returns:
+            str: Base directory path
+        """
         if getattr(sys, 'frozen', False):
             # We're running in a bundle (PyInstaller)
             return os.path.dirname(sys.executable)
@@ -753,8 +771,16 @@ Copyright © 2025 Oliver Ernster
             # We're running in a normal Python environment
             return os.path.dirname(os.path.abspath(__file__)) or os.getcwd()
 
-    def find_script(self, script_name):
-        """Find a script in various possible locations"""
+    def find_script(self, script_name: str) -> Optional[str]:
+        """
+        Find a script in various possible locations.
+        
+        Args:
+            script_name (str): Name of the script file
+            
+        Returns:
+            Optional[str]: Path to the script or None if not found
+        """
         base_dir = self.get_base_dir()
         
         # List of possible locations to check
@@ -774,36 +800,50 @@ Copyright © 2025 Oliver Ernster
         self.log_status(f"Script not found: {script_name}")
         return None
 
-    def log_status(self, message):
-        """Add a message to the debug output"""
+    def log_status(self, message: str):
+        """
+        Add a message to the debug output.
+        
+        Args:
+            message (str): Message to log
+        """
         if hasattr(self, 'debug_output') and self.debug_output is not None:
             self.debug_output.append(message)
             # Ensure the latest message is visible
             self.debug_output.ensureCursorVisible()
         print(message)  # Also print to console for debugging
 
-    def log_discovery_output(self, message):
-        """Add a message to the Music Discovery output"""
+    def log_discovery_output(self, message: str):
+        """
+        Add a message to the Music Discovery output.
+        
+        Args:
+            message (str): Message to log
+        """
         if hasattr(self, 'discovery_output') and self.discovery_output is not None:
             self.discovery_output.append(message)
             self.discovery_output.ensureCursorVisible()
 
-    def log_spotify_output(self, message):
-        """Add a message to the Spotify Client output"""
+    def log_spotify_output(self, message: str):
+        """
+        Add a message to the Spotify Client output.
+        
+        Args:
+            message (str): Message to log
+        """
         if hasattr(self, 'spotify_output') and self.spotify_output is not None:
             self.spotify_output.append(message)
             self.spotify_output.ensureCursorVisible()
 
     def launch_music_discovery(self):
-        """Launch the Music Discovery script with progress tracking"""
+        """Launch the Music Discovery script with progress tracking."""
         if self.discovery_worker and self.discovery_worker.isRunning():
             self.log_status("Music Discovery is already running")
             return
 
-        # Reset UI
+        # Reset UI - clear the status text before showing dialog
         self.discovery_progress.setValue(0)
-        self.discovery_status.setText("Starting...")
-        self.discovery_eta.setText("ETA: Calculating...")
+        self.discovery_status.setText("")  # Clear status text completely
         self.discovery_button.setEnabled(False)
         
         # Disable the Spotify button while Music Discovery is running
@@ -843,65 +883,121 @@ Copyright © 2025 Oliver Ernster
 
         self.log_status("Music Discovery initiated...")
 
-    def update_discovery_progress(self, value, eta, status):
-        """Update discovery progress bar and status"""
-        # Only update if value is greater than current value
-        # This prevents "jumping back" in progress
-        current_value = self.discovery_progress.value()
-        if value >= current_value or value == 0:  # Allow explicit reset to 0
-            self.discovery_progress.setValue(value)
+    def update_discovery_progress(self, value: int, status: str):
+        """
+        Update discovery progress bar and status with visual feedback.
+        
+        Args:
+            value (int): Progress value (0-100)
+            status (str): Status message
+        """
+        # Update the progress bar
+        self.discovery_progress.setValue(value)
+        
+        # Filter out unusual characters and problematic status messages
+        if status:
+            # Skip certain status messages entirely
+            skip_messages = [
+                "Executing:", 
+                "Working directory:", 
+                "\033", # ANSI escape codes
+                "Progress: |"  # Console progress bar
+            ]
             
-            # Update ETA with a simpler format
-            if eta and eta != "Calculating...":
-                self.discovery_eta.setText(f"ETA: {eta}")
-            else:
-                self.discovery_eta.setText("ETA: Calculating...")
+            if any(msg in status for msg in skip_messages):
+                return
             
-            # Truncate status and remove progress text
-            self.discovery_status.setText(self.truncate_status(status))
+            # Filter out control characters and non-printable characters
+            filtered_status = ''.join(c for c in status if c.isprintable() and ord(c) < 127)
+            
+            # Only update if we have a meaningful filtered status
+            if filtered_status and len(filtered_status) > 3:
+                self.discovery_status.setText(self.truncate_status(filtered_status))
+        
+        # Force UI refresh
+        QApplication.processEvents()
 
-    def discovery_finished(self, success):
-        """Handle when music discovery is finished"""
+    def discovery_finished(self, success: bool):
+        """
+        Handle when music discovery is finished.
+        
+        Args:
+            success (bool): Whether the script completed successfully
+        """
         self.discovery_button.setEnabled(True)
         
         # Re-enable the Spotify button when Music Discovery completes
         self.spotify_button.setEnabled(True)
         
         if success:
-            # Check if we actually processed files (not just cancelled the dialog)
-            if self.discovery_progress.value() > 10 or "complete" in self.discovery_status.text().lower():
-                # Real completion - keep at 100%
+            # Check for completion message in the output
+            completion_detected = False
+            cancellation_detected = False
+            
+            if hasattr(self, 'discovery_output'):
+                output_text = self.discovery_output.toPlainText().lower()
+                
+                # Check for successful completion
+                completion_detected = any(phrase in output_text for phrase in [
+                    "music discovery complete",
+                    "process finished with return code: 0",
+                    "completed successfully",
+                    "check", "recommendations.json"  # Look for the output file reference
+                ])
+                
+                # Check specifically for cancellation messages
+                cancellation_detected = any(phrase in output_text for phrase in [
+                    "no directory selected",
+                    "no file selected",
+                    "operation cancelled"
+                ])
+                
+                # Also check if the output is very short (suggesting the file dialog was just opened and closed)
+                if len(output_text.split()) < 10 and "executing:" in output_text:
+                    cancellation_detected = True
+            
+            # Check if the progress is very low (suggesting we barely started)
+            if self.discovery_progress.value() < 5:
+                cancellation_detected = True
+            
+            # ONLY mark as complete if we detect explicit completion indicators
+            if completion_detected and not cancellation_detected:
+                # Real completion - set to 100%
                 self.discovery_progress.setValue(100)
                 self.discovery_status.setText("Completed successfully")
-                self.discovery_eta.setText("ETA: Complete")
                 self.log_discovery_output("Music Discovery completed successfully.")
             else:
-                # User likely cancelled file selection - reset to 0%
+                # Either explicit cancellation or no proper completion detected
                 self.discovery_progress.setValue(0)
                 self.discovery_status.setText("Ready")
-                self.discovery_eta.setText("ETA: --")
-                self.log_discovery_output("Operation cancelled.")
+                
+                if cancellation_detected:
+                    self.log_discovery_output("Operation cancelled.")
+                else:
+                    self.log_discovery_output("Process did not complete successfully.")
         else:
             # Reset on failure
             self.discovery_progress.setValue(0)
             self.discovery_status.setText("Failed")
-            self.discovery_eta.setText("ETA: --")
             self.log_discovery_output("Music Discovery process failed.")
 
     def launch_spotify_client(self):
-        """Launch the Spotify Client script with progress tracking"""
+        """Launch the Spotify Client script with progress tracking."""
         if self.spotify_worker and self.spotify_worker.isRunning():
             # Script is already running
             self.log_status("Spotify Client is already running")
             return
                 
-        # Reset UI
-        self.spotify_progress.setValue(0)
-        self.spotify_status.setText("Starting...")
-        self.spotify_eta.setText("ETA: Calculating...")
-        self.spotify_button.setEnabled(False)
+        # Reset UI for all progress bars - ensure they're explicitly set to 0
+        self.spotify_progress1.setValue(0)
+        self.spotify_progress2.setValue(0)
         
-        # Disable the Music Discovery button while Spotify Client is running
+        # Clear all text labels
+        self.spotify_status1.setText("")
+        self.spotify_status2.setText("")
+        
+        # Disable buttons
+        self.spotify_button.setEnabled(False)
         self.discovery_button.setEnabled(False)
         
         # Clear the output text
@@ -912,7 +1008,7 @@ Copyright © 2025 Oliver Ernster
                 
         # Find the script
         spotify_script = None
-        for script_name in ["spotifyclient.py", "newspotifyclient.py"]:
+        for script_name in ["spotifyclient.py"]:
             script_path = self.find_script(script_name)
             if script_path:
                 spotify_script = script_path
@@ -923,7 +1019,6 @@ Copyright © 2025 Oliver Ernster
             self.log_status("ERROR: Could not find any Spotify client script!")
             self.spotify_button.setEnabled(True)
             self.discovery_button.setEnabled(True)  # Re-enable Music Discovery button
-            self.spotify_status.setText("Error: Script not found")
             return
                 
         # Create and start the worker thread
@@ -937,77 +1032,176 @@ Copyright © 2025 Oliver Ernster
         
         # Start the thread
         self.spotify_worker.start()
+        
+        # Log the start of the process
         self.log_status("Spotify Client started")
         self.log_spotify_output("Spotify Client process started...")
-
-    def update_discovery_progress(self, value, eta, status):
-        """Update discovery progress bar and status"""
-        # Only update if value is greater than current value
-        # This prevents "jumping back" in progress
-        current_value = self.discovery_progress.value()
-        if value >= current_value or value == 0:  # Allow explicit reset to 0
-            self.discovery_progress.setValue(value)
-            self.discovery_eta.setText(f"ETA: {eta}")
-            self.discovery_status.setText(self.truncate_status(status))
+           
+    def update_spotify_progress(self, value: int, status: str):
+        """
+        Update the appropriate progress bar based on the phase.
+        
+        Args:
+            value (int): Progress value (0-100)
+            status (str): Status message
+        """
+        # Check if this is a Phase 2 update by looking for the phase2: prefix
+        if isinstance(status, str) and status.startswith("phase2:"):
+            # This is a Phase 2 update, remove the prefix
+            actual_status = status[7:]
             
-    def update_spotify_progress(self, value, eta, status):
-        """Update spotify progress bar and status"""
-        # Only update if value is greater than current value
-        # This prevents "jumping back" in progress
-        current_value = self.spotify_progress.value()
-        if value >= current_value or value == 0:  # Allow explicit reset to 0
-            self.spotify_progress.setValue(value)
+            # If Phase 1 isn't completed yet, mark it as complete
+            if self.spotify_progress1.value() < 100:
+                self.spotify_progress1.setValue(100)
+                self.spotify_status1.setText("Artist Classification Complete")
+                
+            # Set the phase2_active flag
+            self.phase2_active = True
             
-            # Update ETA with a simpler format
-            if eta and eta != "Calculating...":
-                self.spotify_eta.setText(f"ETA: {eta}")
+            # Handle "starting playlist generation" specifically
+            if "starting playlist generation" in actual_status.lower():
+                self.spotify_progress2.setValue(0)  # Start at 0%
+                
+                # Extract the total count of artists if possible
+                artists_match = re.search(r'(\d+) artists across', actual_status.lower())
+                if artists_match:
+                    total_artists = artists_match.group(1)
+                    self.spotify_status2.setText(f"Starting with {total_artists} artists")
+                else:
+                    self.spotify_status2.setText("Starting Playlist Generation")
+            elif "progress:" in actual_status.lower():
+                # Extract progress percentage
+                progress_match = re.search(r'progress: (\d+\.\d+)%', actual_status.lower())
+                if progress_match:
+                    percentage = float(progress_match.group(1))
+                    self.spotify_progress2.setValue(int(percentage))
+                    
+                # Update status text
+                self.spotify_status2.setText(self.truncate_status(actual_status))
             else:
-                self.spotify_eta.setText("ETA: Calculating...")
+                # For other Phase 2 messages
+                self.spotify_status2.setText(self.truncate_status(actual_status))
+                
+                # If organizing tracks, increment progress slightly
+                if "organizing tracks for artist" in actual_status.lower():
+                    current = self.spotify_progress2.value()
+                    if current < 90:  # Cap at 90% until completion
+                        self.spotify_progress2.setValue(min(current + 2, 90))
+            return
             
-            # Truncate status and remove progress text
-            self.spotify_status.setText(self.truncate_status(status))
-
-    def spotify_finished(self, success):
-        """Handle when spotify client is finished"""
+        # Phase 1 updates (no phase2: prefix)
+        # Handle "starting playlist generation" detection here as a fallback
+        if "starting playlist generation" in status.lower():
+            # This is the transition point - complete Phase 1
+            self.spotify_progress1.setValue(100)
+            self.spotify_status1.setText("Artist Classification Complete")
+            # Reset and initialize Phase 2
+            self.phase2_active = True
+            self.spotify_progress2.setValue(0)
+            self.spotify_status2.setText("Starting Playlist Generation")
+            return
+            
+        # Normal Phase 1 update
+        self.spotify_progress1.setValue(value)
+        self.spotify_status1.setText(self.truncate_status(status))
+    
+    def spotify_finished(self, success: bool):
+        """
+        Handle when spotify client is finished.
+        
+        Args:
+            success (bool): Whether the script completed successfully
+        """
         self.spotify_button.setEnabled(True)
         
         # Re-enable the Music Discovery button when Spotify Client completes
         self.discovery_button.setEnabled(True)
         
         if success:
-            # Check if progress is still at the initial value
-            # If so, assume user cancelled the file/folder selection
-            current_progress = self.spotify_progress.value()
-            if current_progress <= 10:
-                self.spotify_progress.setValue(0)  # Keep at 0%
-                self.spotify_status.setText("Ready")
-                self.spotify_eta.setText("ETA: --")
-                self.log_spotify_output("Operation cancelled.")
-                return
-                    
-            # Normal successful completion
-            self.spotify_progress.setValue(100)
-            self.spotify_status.setText("Completed successfully.")
-            self.spotify_eta.setText("ETA: Complete")
-            self.log_spotify_output("Spotify Client completed successfully.")
-            self.log_spotify_output("Check your Spotify Web UI for playlists.")
+            # Check for completion message in the output
+            completion_detected = False
+            cancellation_detected = False
+            
+            if hasattr(self, 'spotify_output'):
+                output_text = self.spotify_output.toPlainText().lower()
                 
+                # Check for successful completion
+                completion_detected = any(phrase in output_text for phrase in [
+                    "process finished with return code: 0",
+                    "completed successfully",
+                    "progress: 100.0%",
+                    "playlist url:"      # Definitive sign of completion - playlist was created
+                ])
+                
+                # Check specifically for cancellation messages
+                cancellation_detected = any(phrase in output_text for phrase in [
+                    "no file selected",
+                    "operation cancelled"
+                ])
+                
+                # Also check if the output is very short (suggesting the file dialog was just opened and closed)
+                if len(output_text.split()) < 10 and "executing:" in output_text:
+                    cancellation_detected = True
+                    
+            # Check if the progress is very low (suggesting we barely started)
+            if self.spotify_progress1.value() < 5:
+                cancellation_detected = True
+                    
+            # ONLY mark as complete if we detect explicit completion indicators and not cancellation
+            if completion_detected and not cancellation_detected:
+                # Complete all phases without resetting previous phases
+                if self.spotify_progress1.value() < 100:
+                    self.spotify_progress1.setValue(100)
+                    self.spotify_status1.setText("Completed successfully")
+                
+                if self.spotify_progress2.value() < 100:
+                    self.spotify_progress2.setValue(100)
+                    self.spotify_status2.setText("Completed successfully")
+                
+                self.log_spotify_output("Spotify Client completed successfully.")
+                self.log_spotify_output("Check your Spotify Web UI for playlists.")
+            else:
+                # Reset Phase 2 and status, but preserve Phase 1
+                self.spotify_progress2.setValue(0)
+                self.spotify_status2.setText("Ready")
+                
+                if cancellation_detected:
+                    self.log_spotify_output("Operation cancelled.")
+                else:
+                    self.log_spotify_output("Process did not complete successfully.")
         else:
-            # Reset on failure
-            self.spotify_progress.setValue(0)
-            self.spotify_status.setText("Failed") 
-            self.spotify_eta.setText("ETA: --")
+            # Reset all progress bars on failure
+            self.spotify_progress1.setValue(0)
+            self.spotify_progress2.setValue(0)
+            
+            self.spotify_status1.setText("Failed")
+            self.spotify_status2.setText("Failed")
+            
             self.log_spotify_output("Spotify Client process failed.")
             
-    def truncate_status(self, status, max_length=70):
-        """Truncate status text to reasonable length for display"""
+    def truncate_status(self, status: str, max_length: int = 70) -> str:
+        """
+        Truncate status text to reasonable length for display.
+        
+        Args:
+            status (str): Status message to truncate
+            max_length (int): Maximum length
+            
+        Returns:
+            str: Truncated status message
+        """
         if len(status) <= max_length:
             return status
         else:
             return status[:max_length-3] + "..."
             
     def closeEvent(self, event):
-        """Handle application shutdown"""
+        """
+        Handle application shutdown.
+        
+        Args:
+            event: Close event
+        """
         # Terminate any running processes
         if self.discovery_worker and self.discovery_worker.isRunning():
             self.discovery_worker.stop()
@@ -1018,13 +1212,56 @@ Copyright © 2025 Oliver Ernster
         event.accept()
 
 
-if __name__ == "__main__":
+def main():
+    """Main entry point for the application."""
+    # Create the application
     app = QApplication(sys.argv)
-    
-    # Set application style
     app.setStyle("Fusion")
     
+    # Find the icon path
+    if getattr(sys, 'frozen', False):
+        # We're running in a bundle (PyInstaller)
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        # We're running in a normal Python environment
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Look for icon in standard locations
+    icon_path = os.path.join(base_dir, "playlistgenerator.ico")
+    if not os.path.exists(icon_path):
+        # Try alternative locations
+        alternative_paths = [
+            os.path.join(base_dir, "icons", "playlistgenerator.ico"),
+            os.path.join(base_dir, "_internal", "playlistgenerator.ico"),
+        ]
+        
+        for path in alternative_paths:
+            if os.path.exists(path):
+                icon_path = path
+                print(f"Found icon at: {path}")
+                break
+        else:
+            print("Warning: No icon file found")
+            icon_path = None
+    else:
+        print(f"Using icon from: {icon_path}")
+    
+    # Set application icon if icon was found
+    if icon_path:
+        try:
+            app_icon = QIcon(icon_path)
+            app.setWindowIcon(app_icon)
+        except Exception as e:
+            print(f"Error setting application icon: {e}")
+    
+    # Create the main window
     window = SpotifyLauncher()
     window.show()
     
+    # Start the event loop
     sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
+    

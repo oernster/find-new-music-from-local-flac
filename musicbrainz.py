@@ -1,52 +1,19 @@
+"""
+MusicBrainz API module for accessing music metadata.
+"""
+
 import random
 import time
-from colorama import Fore, Back, Style
+from typing import Dict, List, Optional, Set
 import requests
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any, Set, Tuple, Callable
+from colorama import Fore, Style
 
 
 # Constants
 DEFAULT_RELEASES_LIMIT = 3
 BASE_REQUEST_DELAY = 6  # seconds between API requests
-MAX_REQUEST_DELAY = 30  # maximum delay after backoff
-MAX_RETRIES = 5  # maximum number of retry attempts
-DEFAULT_RECOMMENDATION_LIMIT = 50  # Increased from 5 to get more potential matches
-
-
-##############################################
-# Abstract Base Classes and Interfaces
-##############################################
-
-class MusicDatabase(ABC):
-    """Abstract base class for music database APIs."""
-    
-    @abstractmethod
-    def search_artist(self, artist_name: str) -> Optional[Dict]:
-        """Search for an artist in the database."""
-        pass
-    
-    @abstractmethod
-    def get_similar_artists(self, artist_id: str, limit: int, exclude_set: Set[str] = None) -> List[Dict]:
-        """
-        Get similar artists from the database.
-        
-        Args:
-            artist_id: ID of the artist to find similar artists for
-            limit: Maximum number of similar artists to return
-            exclude_set: Set of artist names to exclude from results
-        """
-        pass
-    
-    @abstractmethod
-    def get_artist_releases(self, artist_id: str, limit: int) -> List[Dict]:
-        """Get releases for an artist from the database."""
-        pass
-    
-    @abstractmethod
-    def get_artist_genres(self, artist_id: str) -> List[str]:
-        """Get genre tags for an artist from the database."""
-        pass
+DEFAULT_RECOMMENDATION_LIMIT = 50
 
 
 def normalize_artist_name(name: str) -> str:
@@ -54,10 +21,10 @@ def normalize_artist_name(name: str) -> str:
     Normalize an artist name for consistent comparison.
     
     Args:
-        name: Artist name to normalize
+        name (str): Artist name to normalize
         
     Returns:
-        Normalized artist name (lowercase, no special chars, no 'the' prefix)
+        str: Normalized artist name (lowercase, no special chars, no 'the' prefix)
     """
     if not name:
         return ""
@@ -78,15 +45,74 @@ def normalize_artist_name(name: str) -> str:
     return name
 
 
+class MusicDatabase(ABC):
+    """Abstract base class for music database APIs."""
+    
+    @abstractmethod
+    def search_artist(self, artist_name: str) -> Optional[Dict]:
+        """
+        Search for an artist in the database.
+        
+        Args:
+            artist_name (str): Name of the artist to search for
+            
+        Returns:
+            Optional[Dict]: Artist information or None if not found
+        """
+        pass
+    
+    @abstractmethod
+    def get_similar_artists(self, artist_id: str, limit: int, exclude_set: Optional[Set[str]] = None) -> List[Dict]:
+        """
+        Get similar artists from the database.
+        
+        Args:
+            artist_id (str): ID of the artist to find similar artists for
+            limit (int): Maximum number of similar artists to return
+            exclude_set (Optional[Set[str]]): Set of artist names to exclude from results
+            
+        Returns:
+            List[Dict]: List of similar artist dictionaries
+        """
+        pass
+    
+    @abstractmethod
+    def get_artist_releases(self, artist_id: str, limit: int) -> List[Dict]:
+        """
+        Get releases for an artist from the database.
+        
+        Args:
+            artist_id (str): ID of the artist
+            limit (int): Maximum number of releases to return
+            
+        Returns:
+            List[Dict]: List of release dictionaries
+        """
+        pass
+    
+    @abstractmethod
+    def get_artist_genres(self, artist_id: str) -> List[str]:
+        """
+        Get genre tags for an artist from the database.
+        
+        Args:
+            artist_id (str): ID of the artist
+            
+        Returns:
+            List[str]: List of genre names
+        """
+        pass
+
+
 class MusicBrainzAPI(MusicDatabase):
     """MusicBrainz API implementation."""
     
-    def __init__(self, user_email: str = "<your email here for musicbrainz account>"):
+    def __init__(self, user_email: str = "<insert your email here>"):
         """
         Initialize the MusicBrainz API client.
         
         Args:
-            user_email: Email to use in User-Agent (MusicBrainz etiquette)
+            user_email (str): Email to use in User-Agent (MusicBrainz etiquette)
         """
         self.base_url = "https://musicbrainz.org/ws/2/"
         self.headers = {
@@ -97,8 +123,18 @@ class MusicBrainzAPI(MusicDatabase):
         self.consecutive_failures = 0
         self.current_delay = BASE_REQUEST_DELAY
 
-    def _make_api_request(self, url, params, error_context):
-        """Make an API request with retry logic and exponential backoff."""
+    def _make_api_request(self, url: str, params: Dict, error_context: str) -> Optional[Dict]:
+        """
+        Make an API request with retry logic and exponential backoff.
+        
+        Args:
+            url (str): API endpoint URL
+            params (Dict): Query parameters
+            error_context (str): Context for error messages
+            
+        Returns:
+            Optional[Dict]: API response as a dictionary or None on failure
+        """
         base_delay = 1  # Initial delay
         max_delay = 64  # Maximum delay
         attempt = 0
@@ -134,9 +170,16 @@ class MusicBrainzAPI(MusicDatabase):
 
         return None
 
-    
     def search_artist(self, artist_name: str) -> Optional[Dict]:
-        """Search for an artist on MusicBrainz."""
+        """
+        Search for an artist on MusicBrainz.
+        
+        Args:
+            artist_name (str): Name of the artist to search for
+            
+        Returns:
+            Optional[Dict]: Artist information or None if not found
+        """
         params = {
             'query': f'artist:"{artist_name}"',
             'limit': 1,
@@ -156,17 +199,18 @@ class MusicBrainzAPI(MusicDatabase):
                 print(f"{Fore.YELLOW}No artist found for {artist_name}{Style.RESET_ALL}")
             return None
     
-    def get_similar_artists(self, artist_id: str, limit: int = DEFAULT_RECOMMENDATION_LIMIT, exclude_set: Set[str] = None) -> List[Dict]:
+    def get_similar_artists(self, artist_id: str, limit: int = DEFAULT_RECOMMENDATION_LIMIT, 
+                         exclude_set: Optional[Set[str]] = None) -> List[Dict]:
         """
         Comprehensive method to find similar artists using multiple strategies.
         
         Args:
-            artist_id: MusicBrainz ID of the artist
-            limit: Maximum number of similar artists to return
-            exclude_set: Set of normalized artist names to exclude from results
+            artist_id (str): MusicBrainz ID of the artist
+            limit (int): Maximum number of similar artists to return
+            exclude_set (Optional[Set[str]]): Set of normalized artist names to exclude from results
             
         Returns:
-            List of similar artist dictionaries
+            List[Dict]: List of similar artist dictionaries
         """
         # Initialize exclusion set
         exclude_set = exclude_set or set()
@@ -199,7 +243,6 @@ class MusicBrainzAPI(MusicDatabase):
                     # 1. Name is empty
                     # 2. Already used
                     # 3. In exclude set
-                    # 4. Seems like a tribute or copycat
                     if (not artist_name or 
                         normalized_name in used_artist_names or 
                         normalized_name in exclude_set):
@@ -227,10 +270,10 @@ class MusicBrainzAPI(MusicDatabase):
         Fetch artists directly related through MusicBrainz relationships.
         
         Args:
-            artist_id: MusicBrainz ID of the source artist
+            artist_id (str): MusicBrainz ID of the source artist
             
         Returns:
-            List of related artist dictionaries
+            List[Dict]: List of related artist dictionaries
         """
         # Fetch artist relationships
         params = {
@@ -263,10 +306,10 @@ class MusicBrainzAPI(MusicDatabase):
         Search for artists with similar genres.
         
         Args:
-            artist_id: MusicBrainz ID of the source artist
+            artist_id (str): MusicBrainz ID of the source artist
             
         Returns:
-            List of genre-similar artist dictionaries
+            List[Dict]: List of genre-similar artist dictionaries
         """
         # Get source artist genres
         genres_result = self._make_api_request(
@@ -299,10 +342,10 @@ class MusicBrainzAPI(MusicDatabase):
         Search for artists with similar name patterns.
         
         Args:
-            artist_id: MusicBrainz ID of the source artist
+            artist_id (str): MusicBrainz ID of the source artist
             
         Returns:
-            List of name-similar artist dictionaries
+            List[Dict]: List of name-similar artist dictionaries
         """
         # Fetch source artist name
         artist_result = self._make_api_request(
@@ -333,42 +376,18 @@ class MusicBrainzAPI(MusicDatabase):
         )
         
         return name_search_result.get('artists', []) if name_search_result else []
-            
-    def _is_tribute_or_copycat(self, artist_name: str, original_artist_name: str) -> bool:
-        """
-        Check if an artist appears to be a tribute band or copycat.
-        
-        Args:
-            artist_name: Name of the artist to check
-            original_artist_name: Name of the original artist
-            
-        Returns:
-            True if the artist appears to be a tribute band or copycat, False otherwise
-        """
-        # Convert to lowercase for case-insensitive matching
-        artist_name = artist_name.lower()
-        original_artist_name = original_artist_name.lower()
-        
-        # Check for tribute band indicators
-        tribute_indicators = [
-            'tribute', 'covers', 'plays', 'experience', 'project', 
-            'ensemble', 'orchestra', 'quartet', 'quintet', 'collective',
-            'tribute to', 'performing', 'karaoke', 'sound-alike',
-            'sound alike', 'impersonator', 'a tribute', 'clone'
-        ]
-        
-        for indicator in tribute_indicators:
-            if indicator in artist_name:
-                return True
-        
-        # Check if the original artist name is contained within this artist's name
-        if original_artist_name and original_artist_name in artist_name and original_artist_name != artist_name:
-            return True
-            
-        return False
     
     def get_artist_releases(self, artist_id: str, limit: int = DEFAULT_RELEASES_LIMIT) -> List[Dict]:
-        """Get releases for an artist from MusicBrainz."""
+        """
+        Get releases for an artist from MusicBrainz.
+        
+        Args:
+            artist_id (str): ID of the artist
+            limit (int): Maximum number of releases to return
+            
+        Returns:
+            List[Dict]: List of release dictionaries
+        """
         params = {
             'artist': artist_id,
             'limit': limit,
@@ -384,7 +403,15 @@ class MusicBrainzAPI(MusicDatabase):
         return result.get('releases', []) if result else []
     
     def get_artist_genres(self, artist_id: str) -> List[str]:
-        """Get genre tags for an artist from MusicBrainz."""
+        """
+        Get genre tags for an artist from MusicBrainz.
+        
+        Args:
+            artist_id (str): ID of the artist
+            
+        Returns:
+            List[str]: List of genre names
+        """
         params = {
             'inc': 'genres',
             'fmt': 'json'

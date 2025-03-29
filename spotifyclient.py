@@ -1,142 +1,42 @@
+"""
+Spotify Client module for creating playlists based on artist recommendations.
+"""
+
 import json
-import backoff
-import random
-import logging
 import time
 import sys
 import os
-import io
 import socket
-import backoff
+import logging
+import io
+import random
 from tkinter import Tk
 from tkinter.filedialog import askopenfilename
-from spotipy import SpotifyOAuth, Spotify
+from typing import Dict, List, Optional, Any, Tuple
 from collections import defaultdict
-from colorama import init, Fore, Style, Cursor
+
+import backoff
+from spotipy import SpotifyOAuth, Spotify
 from spotipy.exceptions import SpotifyException
+from colorama import init, Fore, Style
+
 from musicbrainz import MusicBrainzAPI, normalize_artist_name
 
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+# Fix console encoding issues on Windows
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # Initialize Colorama
 init(autoreset=True)
 
 
-class ConsoleCleaner:
-    """Handles console cleaning for error messages"""
-    
-    @staticmethod
-    def clear_last_lines(num_lines=1):
-        """Clear the specified number of lines from the console"""
-        for _ in range(num_lines):
-            sys.stdout.write('\033[F')  # Move cursor up one line
-            sys.stdout.write('\033[K')  # Clear line
-        sys.stdout.flush()
-
-
-class ProgressBar:
-    def __init__(self, total, width=50, prefix='Progress:', suffix='Complete', fill='█', empty='─'):
-        self.total = total
-        self.width = width
-        self.prefix = prefix
-        self.suffix = suffix
-        self.fill = fill
-        self.empty = empty
-        self.current = 0
-        self.start_time = time.time()
-        self.request_delay = 1.2  # Default delay
-        self.bar_output_lines = 2  # How many lines the progress bar takes
-        
-        # Get terminal size
-        try:
-            self.terminal_height = os.get_terminal_size().lines
-        except (AttributeError, OSError):
-            self.terminal_height = 24  # Default fallback height
-            
-        # Clear the area where the progress bar will be
-        sys.stdout.write("\n" * self.bar_output_lines)
-        
-        # Initial display
-        self.display()
-        
-    def update(self, current=None, request_delay=None):
-        """Update progress bar state"""
-        if current is not None:
-            self.current = current
-        if request_delay is not None:
-            self.request_delay = request_delay
-        self.display()
-        
-    def increment(self):
-        """Increment progress by 1"""
-        self.current += 1
-        self.display()
-    
-    def calculate_eta(self):
-        """Calculate and format the estimated time to completion"""
-        if self.current == 0:
-            return "Calculating..."
-        
-        elapsed = time.time() - self.start_time
-        if elapsed == 0:
-            return "Calculating..."
-            
-        items_per_second = self.current / elapsed
-        items_remaining = self.total - self.current
-        
-        # Factor in the request delay for remaining tasks
-        remaining_seconds = items_remaining / items_per_second
-        
-        # Format the remaining time
-        if remaining_seconds < 60:
-            return f"{int(remaining_seconds)}s"
-        elif remaining_seconds < 3600:
-            minutes = int(remaining_seconds // 60)
-            seconds = int(remaining_seconds % 60)
-            return f"{minutes}m {seconds}s"
-        else:
-            hours = int(remaining_seconds // 3600)
-            minutes = int((remaining_seconds % 3600) // 60)
-            return f"{hours}h {minutes}m"
-    
-    def display(self):
-        """Display or update the progress bar at the bottom of the screen"""
-        # Calculate the progress
-        filled_length = int(self.width * self.current // self.total)
-        bar = self.fill * filled_length + self.empty * (self.width - filled_length)
-        percentage = f"{100 * self.current / self.total:.1f}%" if self.total > 0 else "0.0%"
-        eta = self.calculate_eta()
-        
-        # Format the progress bar
-        line1 = f"{Fore.CYAN}{self.prefix} |{Fore.GREEN}{bar}{Fore.CYAN}| {percentage} {self.suffix}"
-        line2 = f"{Fore.CYAN}Processed: {self.current}/{self.total} artists | ETA: {eta}{Style.RESET_ALL}"
-        
-        # Save current cursor position
-        sys.stdout.write("\033[s")
-        
-        # Move to the bottom of the screen minus the progress bar height
-        sys.stdout.write(f"\033[{self.terminal_height-1};1H")
-        
-        # Clear the lines where the progress bar will be
-        sys.stdout.write("\033[K" + line1 + "\n\033[K" + line2)
-        
-        # Restore cursor position
-        sys.stdout.write("\033[u")
-        
-        # Ensure output is displayed
-        sys.stdout.flush()
-    
-    def cleanup(self):
-        """Clean up by moving cursor to the end"""
-        sys.stdout.write(f"\033[{self.terminal_height};1H\n")
-        sys.stdout.flush()
-
-
 class CustomLogFormatter(logging.Formatter):
-    """Custom formatter to add colors to log messages"""
+    """Custom formatter to add colors to log messages."""
+    
     def format(self, record):
+        """Format log messages with colors."""
         levelname = record.levelname
         message = record.getMessage()
         
@@ -153,67 +53,32 @@ class CustomLogFormatter(logging.Formatter):
             return message
 
 
-class ProgressBar:
-    def __init__(self, total, width=50, prefix='Progress:', suffix='Complete', fill='█', empty='─'):
-        self.total = total
-        self.width = width
-        self.prefix = prefix
-        self.suffix = suffix
-        self.fill = fill
-        self.empty = empty
-        self.current = 0
-        self.start_time = time.time()
-        self.request_delay = 1.2  # Default delay
-        
-    def update(self, current=None, request_delay=None):
-        """Update progress bar state"""
-        if current is not None:
-            self.current = current
-        if request_delay is not None:
-            self.request_delay = request_delay
+# Set up logging
+def setup_logging():
+    """Configure logging with custom formatter."""
+    # Create console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(CustomLogFormatter())
     
-    def increment(self):
-        """Increment progress by 1"""
-        self.current += 1
+    # Configure root logger
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
     
-    def calculate_eta(self):
-        """Calculate and format the estimated time to completion"""
-        if self.current == 0:
-            return "Calculating..."
-        
-        elapsed = time.time() - self.start_time
-        if elapsed == 0:
-            return "Calculating..."
-            
-        items_per_second = self.current / elapsed
-        items_remaining = self.total - self.current
-        
-        # Factor in the request delay for remaining tasks
-        remaining_seconds = items_remaining / items_per_second
-        
-        # Format the remaining time
-        if remaining_seconds < 60:
-            return f"{int(remaining_seconds)}s"
-        elif remaining_seconds < 3600:
-            minutes = int(remaining_seconds // 60)
-            seconds = int(remaining_seconds % 60)
-            return f"{minutes}m {seconds}s"
-        else:
-            hours = int(remaining_seconds // 3600)
-            minutes = int((remaining_seconds % 3600) // 60)
-            return f"{hours}h {minutes}m"
-    
-    def cleanup(self):
-        """Placeholder for cleanup method"""
-        pass
+    root_logger.addHandler(console_handler)
+    root_logger.setLevel(logging.INFO)
 
-# Define backoff strategy for DNS resolution issues
+
+# Define backoff handler
 def backoff_hdlr(details):
-    logging.warning(f"Backing off {details['wait']:0.1f} seconds after {details['tries']} tries calling {details['target'].__name__}")
+    """Log information when backing off."""
+    logging.warning(
+        f"Backing off {details['wait']:0.1f} seconds after {details['tries']} tries "
+        f"calling {details['target'].__name__}")
 
 
 def dns_resolve_backoff(exception):
-    """Return True if this is a DNS resolution error"""
+    """Return True if this is a DNS resolution error."""
     if isinstance(exception, socket.gaierror):
         return True
     if isinstance(exception, Exception) and "getaddrinfo failed" in str(exception):
@@ -221,50 +86,22 @@ def dns_resolve_backoff(exception):
     return False
 
 
-class ProgressBarLogHandler(logging.StreamHandler):
-    """Custom log handler that preserves the progress bar"""
-    def __init__(self, progress_bar):
-        super().__init__()
-        self.progress_bar = progress_bar
-        self.setFormatter(CustomLogFormatter())
-        
-    def emit(self, record):
-        # Format the log message
-        message = self.format(record)
-        
-        # Save cursor position
-        sys.stdout.write("\033[s")
-        
-        # Move cursor to a position for log messages
-        # First clear the area where the progress bar is (move up 2 lines from cursor)
-        sys.stdout.write("\033[2A")
-        
-        # Clear the entire line before writing the message
-        sys.stdout.write("\033[K")
-        
-        # Write log message and newline with line clear
-        sys.stdout.write(message + "\n\033[K\n")
-        
-        # Restore cursor position
-        sys.stdout.write("\033[u")
-        
-        # Redraw the progress bar
-        self.progress_bar.display()
-        
-        # Flush to ensure everything is displayed
-        sys.stdout.flush()
-
-
 class SpotifyPlaylistManager:
-    request_delay = 1.2  # Minimum delay between consecutive Spotify API requests in seconds
-    musicbrainz_delay = 6.0  # Minimum delay between consecutive MusicBrainz API requests in seconds
+    """Manager for creating Spotify playlists."""
+    
+    request_delay = 1.2  # Minimum delay between consecutive Spotify API requests
+    musicbrainz_delay = 6.0  # Minimum delay between consecutive MusicBrainz API requests
 
     def __init__(self):
-        self.progress_bar = None
+        """Initialize the Spotify Playlist Manager."""
         self.sp = self.create_spotify_client()
         self.mb = MusicBrainzAPI()  # Initialize MusicBrainz API client
         self.last_mb_request_time = 0  # Track time of last MusicBrainz API request
         self.artist_genre_cache = {}  # Cache to store artist genre mappings
+        self.total_keys = 0
+        self.processed_keys = 0
+        self.total_to_process = 0
+        self.processed_count = 0
         logging.info("Spotify Authentication Successful!")
 
     @backoff.on_exception(
@@ -274,9 +111,15 @@ class SpotifyPlaylistManager:
         giveup=lambda e: not dns_resolve_backoff(e),
         on_backoff=backoff_hdlr
     )
-    def create_spotify_client(self):
+    def create_spotify_client(self) -> Spotify:
+        """
+        Create and authenticate the Spotify client.
+        
+        Returns:
+            Spotify: Authenticated Spotify client
+        """
         try:
-            # Use more comprehensive scopes to ensure we have all needed permissions
+            # Use comprehensive scopes to ensure we have all needed permissions
             scopes = [
                 "playlist-modify-public",
                 "playlist-modify-private", 
@@ -286,8 +129,8 @@ class SpotifyPlaylistManager:
             ]
             
             auth_manager = SpotifyOAuth(
-                client_id="your client id",
-                client_secret="your secret",
+                client_id="insert client id",
+                client_secret="insert client secret",
                 redirect_uri="http://127.0.0.1:8888/callback",
                 scope=" ".join(scopes),
                 cache_path=".spotify_token_cache"  # Cache token to avoid repeated auth
@@ -316,7 +159,13 @@ class SpotifyPlaylistManager:
             logging.error(f"Spotify Authentication Failed: {e}")
             raise
 
-    def select_json_file(self):
+    def select_json_file(self) -> str:
+        """
+        Open a file dialog to select the source JSON file.
+        
+        Returns:
+            str: Selected file path or empty string if canceled
+        """
         logging.info("Please select the source JSON file.")
         root = Tk()
         root.withdraw()
@@ -324,11 +173,15 @@ class SpotifyPlaylistManager:
         root.destroy()
         return file_path
 
-    def get_artist_genre(self, artist_name):
+    def get_artist_genre(self, artist_name: str) -> str:
         """
         Get the primary genre for an artist using MusicBrainz API.
-        Respects rate limiting of 6 seconds between requests.
-        Returns a default genre if no genre information is found.
+        
+        Args:
+            artist_name (str): Name of the artist
+            
+        Returns:
+            str: Primary genre or "Miscellaneous" if not found
         """
         # Check cache first
         if artist_name in self.artist_genre_cache:
@@ -373,11 +226,26 @@ class SpotifyPlaylistManager:
         self.artist_genre_cache[artist_name] = primary_genre
         return primary_genre
 
-    def read_artist_genres(self, filename):
-        """Read artists from JSON file and organize by genre."""
+    def read_artist_genres(self, filename: str) -> defaultdict:
+        """
+        Read artists from JSON file and organize by genre.
+        
+        Args:
+            filename (str): Path to the JSON file
+            
+        Returns:
+            defaultdict: Dictionary mapping genres to lists of artists
+        """
         try:
-            with open(filename, 'r') as file:
+            with open(filename, 'r', encoding='utf-8') as file:
                 data = json.load(file)
+            
+            # Store total keys for progress calculation
+            self.total_keys = len(data)
+            self.processed_keys = 0
+            
+            # Log total keys for progress tracking
+            logging.info(f"JSON file contains {self.total_keys} total artists to process")
             
             # Dictionary to map genres to artists
             genre_artists = defaultdict(list)
@@ -391,6 +259,11 @@ class SpotifyPlaylistManager:
                 for artist in inspired_artists:
                     if artist not in genre_artists[genre]:
                         genre_artists[genre].append(artist)
+                
+                # Update processed count and log progress
+                self.processed_keys += 1
+                progress_percent = (self.processed_keys / self.total_keys) * 100
+                logging.info(f"Progress: {progress_percent:.1f}% ({self.processed_keys}/{self.total_keys} artists)")
             
             # Log summary of genres and artists
             total_artists = sum(len(artists) for artists in genre_artists.values())
@@ -410,13 +283,24 @@ class SpotifyPlaylistManager:
         giveup=lambda e: not dns_resolve_backoff(e),
         on_backoff=backoff_hdlr
     )
-    def retry_on_rate_limit(self, func, *args, **kwargs):
+    def retry_on_rate_limit(self, func, *args, **kwargs) -> Any:
+        """
+        Retry a function call with backoff for rate limits.
+        
+        Args:
+            func: Function to call
+            *args: Positional arguments for the function
+            **kwargs: Keyword arguments for the function
+            
+        Returns:
+            Any: Result of the function call or None on failure
+        """
         max_retries = 3
         retry_count = 0
         
         while retry_count < max_retries:
             try:
-                # Use a clearer, non-overlapping log message
+                # Log API call
                 logging.info(f"API Call: {func.__name__}")
                 result = func(*args, **kwargs)
                 time.sleep(self.request_delay)
@@ -462,24 +346,19 @@ class SpotifyPlaylistManager:
         logging.error(f"Failed after {retry_count} retries")
         return None
 
-    def generate_playlists_by_genre(self, genre_artists):
+    def generate_playlists_by_genre(self, genre_artists: Dict[str, List[str]]) -> None:
+        """
+        Generate playlists by genre from artist recommendations.
+        
+        Args:
+            genre_artists (Dict[str, List[str]]): Dictionary mapping genres to artists
+        """
         all_playlists = defaultdict(list)
         
-        # Collect all tracks across all artists first
-        all_tracks = []
-        debug_artists_processed = 0
-
-        # Get total number of artists to process
-        total_artists = sum(len(artists) for artists in genre_artists.values())
-        
-        # Initialize progress bar with total number of artists
-        # Ensure we have at least one artist to process (avoid division by zero)
-        if total_artists == 0:
-            total_artists = 1
+        # Reset counters for playlist generation phase
+        self.total_to_process = sum(len(artists) for artists in genre_artists.values())
+        self.processed_count = 0
                 
-        self.progress_bar = ProgressBar(total_artists)
-        current_artist = 0
-
         # Process all artists by genre
         for genre, artists in genre_artists.items():
             logging.info(f"Processing artists in genre: {genre}")
@@ -491,15 +370,11 @@ class SpotifyPlaylistManager:
                 
                 if tracks:
                     genre_tracks.extend(tracks)
-                    debug_artists_processed += 1
                 
-                # Update progress bar
-                current_artist += 1
-                self.progress_bar.update(current_artist, self.request_delay)
-                
-                # Update total if needed (safety check)
-                if current_artist > self.progress_bar.total:
-                    self.progress_bar.total = current_artist + 5  # Add extra room
+                # Update progress
+                self.processed_count += 1
+                progress_percent = (self.processed_count / self.total_to_process) * 100
+                logging.info(f"Progress: {progress_percent:.1f}% ({self.processed_count}/{self.total_to_process} artists)")
             
             # Only add playlists with enough tracks
             if len(genre_tracks) >= 20:
@@ -522,13 +397,13 @@ class SpotifyPlaylistManager:
                 logging.warning(f"Not enough tracks for genre '{genre}' (found {len(genre_tracks)}, need at least 20)")
 
         # Debug summary
-        logging.info(f"Processed {debug_artists_processed} artists")
+        logging.info(f"Processed {self.processed_count} artists")
         logging.info(f"Total playlists to create: {len(all_playlists)}")
         for name, tracks in all_playlists.items():
             logging.info(f"Playlist '{name}': {len(tracks)} tracks")
 
-        # Ensure progress shows 100% at the end
-        self.progress_bar.update(self.progress_bar.total)
+        # Ensure progress shows completion
+        logging.info(f"Progress: 100% (Generation phase complete)")
         
         if not all_playlists:
             logging.warning("No tracks were found for any artists")
@@ -536,13 +411,17 @@ class SpotifyPlaylistManager:
                 
         # Create the playlists in Spotify
         self.create_playlists_in_spotify(all_playlists)
-        
-        # Clean up progress bar when finished
-        if self.progress_bar:
-            self.progress_bar.cleanup()
 
-    def organise_artist_tracks(self, artist):
-        """Get top tracks for an artist"""
+    def organise_artist_tracks(self, artist: str) -> List[str]:
+        """
+        Get top tracks for an artist.
+        
+        Args:
+            artist (str): Artist name
+            
+        Returns:
+            List[str]: List of track IDs
+        """
         artist_id = self.retry_on_rate_limit(self.sp.search, q=f'artist:{artist}', type='artist', limit=1)
 
         if artist_id and 'artists' in artist_id and artist_id['artists']['items']:
@@ -553,7 +432,13 @@ class SpotifyPlaylistManager:
                 return track_ids
         return []
 
-    def create_playlists_in_spotify(self, all_playlists):
+    def create_playlists_in_spotify(self, all_playlists: Dict[str, List[str]]) -> None:
+        """
+        Create playlists in Spotify with the given tracks.
+        
+        Args:
+            all_playlists (Dict[str, List[str]]): Dictionary mapping playlist names to track IDs
+        """
         try:
             # Get user details and log them for debugging
             user_details = self.sp.current_user()
@@ -564,25 +449,41 @@ class SpotifyPlaylistManager:
             logging.info(f"Attempting to create {len(all_playlists)} playlists")
             for playlist_name, tracks in all_playlists.items():
                 logging.info(f"  - '{playlist_name}': {len(tracks)} tracks")
-
+            
+            # Dictionary to track number of playlists per genre
+            genre_counts = {}
+            
+            # Process playlists
             for playlist_index, (playlist_name, tracks) in enumerate(all_playlists.items(), start=1):
                 if not tracks:
                     logging.warning(f"No tracks found for '{playlist_name}'. Skipping.")
                     continue
-
+                
+                # Extract genre from playlist name
+                genre = playlist_name.replace(" Mix", "").strip()
+                
+                # Update the count for this genre
+                if genre not in genre_counts:
+                    genre_counts[genre] = 1
+                else:
+                    genre_counts[genre] += 1
+                
+                # Create the numbered playlist name
+                numbered_playlist_name = f"{genre} Mix #{genre_counts[genre]}"
+                
                 # Try to create and populate the playlist with proper error handling
                 try:
-                    logging.info(f"Creating playlist '{playlist_name}' with {len(tracks)} tracks")
-                    playlist_result = self.create_playlist(playlist_name, tracks, user_id)
+                    logging.info(f"Creating playlist '{numbered_playlist_name}' with {len(tracks)} tracks")
+                    playlist_result = self.create_playlist(numbered_playlist_name, tracks, user_id)
                     
                     if playlist_result:
                         playlist_url = f"https://open.spotify.com/playlist/{playlist_result}"
-                        logging.info(f"SUCCESS: Created playlist: {playlist_name}")
+                        logging.info(f"SUCCESS: Created playlist: {numbered_playlist_name}")
                         logging.info(f"Playlist URL: {playlist_url}")
                     else:
-                        logging.error(f"Failed to create playlist '{playlist_name}'")
+                        logging.error(f"Failed to create playlist '{numbered_playlist_name}'")
                 except Exception as e:
-                    logging.error(f"Error creating playlist '{playlist_name}': {e}")
+                    logging.error(f"Error creating playlist '{numbered_playlist_name}': {e}")
                     
         except Exception as e:
             logging.error(f"Error in create_playlists_in_spotify: {e}")
@@ -594,12 +495,27 @@ class SpotifyPlaylistManager:
         giveup=lambda e: not dns_resolve_backoff(e),
         on_backoff=backoff_hdlr
     )
-    def create_playlist(self, playlist_name, track_ids, user_id):
+    def create_playlist(self, playlist_name: str, track_ids: List[str], user_id: str) -> Optional[str]:
+        """
+        Create a playlist and add tracks to it.
+        
+        Args:
+            playlist_name (str): Name of the playlist
+            track_ids (List[str]): List of track IDs to add
+            user_id (str): Spotify user ID
+            
+        Returns:
+            Optional[str]: Playlist ID or None on failure
+        """
         try:
             # First create an empty playlist
             logging.info(f"Creating empty playlist '{playlist_name}'")
-            playlist = self.sp.user_playlist_create(user_id, playlist_name, public=True, 
-                                                  description=f"Genre playlist created by SpotifyPlaylistManager")
+            playlist = self.sp.user_playlist_create(
+                user_id, 
+                playlist_name, 
+                public=True,
+                description=f"Genre playlist created by SpotifyPlaylistManager"
+            )
             playlist_id = playlist['id']
             
             # Log playlist details
@@ -617,7 +533,7 @@ class SpotifyPlaylistManager:
                 
                 # Try to add the tracks with specific error handling
                 try:
-                    result = self.sp.user_playlist_add_tracks(user_id, playlist_id, chunk)
+                    self.sp.user_playlist_add_tracks(user_id, playlist_id, chunk)
                     logging.info(f"Successfully added chunk to playlist")
                 except SpotifyException as e:
                     logging.error(f"Spotify API error adding tracks: {e}")
@@ -641,34 +557,20 @@ class SpotifyPlaylistManager:
             return None
 
 
-def main():
-    # Configure basic logging with INFO level
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(message)s',
-        handlers=[logging.StreamHandler(sys.stdout)]
-    )
-    
-    # Set a custom formatter for console output
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(CustomLogFormatter())
-    
-    # Get the root logger and remove any existing handlers
-    root_logger = logging.getLogger()
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-    
-    # Add the new console handler
-    root_logger.addHandler(console_handler)
-    root_logger.setLevel(logging.INFO)
+def main() -> None:
+    """Main entry point for the Spotify Client application."""
+    # Configure logging
+    setup_logging()
     
     try:
         manager = SpotifyPlaylistManager()
         file_path = manager.select_json_file()
         if file_path:
-            # Now using the genre-based function
+            # Use the genre-based function
             genre_artists = manager.read_artist_genres(file_path)
             if genre_artists:
+                # Add this line to explicitly signal the start of playlist generation
+                logging.info(f"Starting playlist generation for {sum(len(artists) for artists in genre_artists.values())} artists across {len(genre_artists)} genres")
                 manager.generate_playlists_by_genre(genre_artists)
             else:
                 logging.error("No valid artists found in the JSON file.")
