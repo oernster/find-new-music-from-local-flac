@@ -319,100 +319,75 @@ class ScriptWorker(QThread):
                 self.console_output.emit(error_msg)
 
     def update_progress_from_line(self, line):
-        """Extract progress information from an output line"""
+        """
+        Enhanced progress tracking with adaptive progress estimation.
+        
+        Key improvements:
+        - Identify meaningful progress indicators
+        - Increment progress conservatively
+        - Support various processing stages
+        """
         try:
-            # First check for Music Discovery specific patterns
-            music_discovery_patterns = [
-                # For processing artists 
-                re.compile(r'=== PROCESSING: (.+?) ==='),
-                # For genre discovery
-                re.compile(r"Found genre for '(.+?)': (.+)"),
-                # For finding artists
-                re.compile(r'Found (\d+) unique artists'),
-                # For finding recommendations
-                re.compile(r'Total source artists with recommendations: (\d+)'),
-                # For MusicBrainz operations
-                re.compile(r'Searching MusicBrainz for artist: (.+)')
+            # Adaptive progress patterns
+            progress_indicators = [
+                # Generic processing markers
+                r'(Processing|Searching|Analyzing|Generating|Retrieving)',
+                # Specific operation counters
+                r'(\d+)/(\d+)',  # Capture x/y progress
+                # Milestone markers
+                r'(Found|Created|Discovered|Processed)',
+                # Specific domain markers
+                r'(artist|track|playlist|genre)'
             ]
             
-            # Check each Music Discovery pattern first
-            for pattern in music_discovery_patterns:
-                match = pattern.search(line)
+            # Track unique operations to prevent over-incrementing
+            if not hasattr(self, '_processed_markers'):
+                self._processed_markers = set()
+            
+            # Conservative progress increment
+            increment = 0.1  # Small, consistent increment
+            
+            # Check if line matches any progress indicators
+            line_lower = line.lower()
+            for pattern in progress_indicators:
+                match = re.search(pattern, line_lower)
                 if match:
-                    if '=== PROCESSING:' in line:
-                        # Processing an artist - increment progress
-                        artist_name = match.group(1)
-                        self.processed_artists += 1
+                    # Check for actual numeric progress
+                    numeric_match = re.search(r'(\d+)/(\d+)', line)
+                    if numeric_match:
+                        # More precise progress calculation
+                        current, total = map(int, numeric_match.groups())
+                        precise_progress = (current / total) * 100
+                        # Use the more precise calculation
+                        increment = min(precise_progress - self.current_value, 1.0)
+                    
+                    # Ensure we don't process the same marker repeatedly
+                    if line not in self._processed_markers:
+                        self._processed_markers.add(line)
                         
-                        # Calculate percentage based on how many we've processed
-                        if hasattr(self, 'total_artists') and self.total_artists > 0:
-                            percentage = min(95, 5 + (self.processed_artists / self.total_artists) * 90)
-                        else:
-                            # If we don't know total, increment gradually
-                            percentage = min(95, 5 + self.processed_artists)
+                        # Increment progress
+                        self.current_value = min(99.9, self.current_value + increment)
                         
-                        self.current_value = percentage
+                        # Emit progress update
                         eta_string = self.calculate_eta()
-                        self.update_progress.emit(int(percentage), eta_string, f"Processing: {artist_name}")
+                        status_message = line[:50] + "..." if len(line) > 50 else line
+                        self.update_progress.emit(
+                            int(self.current_value), 
+                            eta_string, 
+                            status_message
+                        )
                         return
-                    
-                    elif 'Found genre for' in line:
-                        # Found genre for an artist
-                        artist_name = match.group(1)
-                        genre = match.group(2)
-                        # Small increment for genre finding
-                        self.current_value = min(95, self.current_value + 1)
-                        eta_string = self.calculate_eta()
-                        self.update_progress.emit(int(self.current_value), eta_string, f"Found genre {genre} for {artist_name}")
-                        return
-                    
-                    elif 'Found' in line and 'unique artists' in line:
-                        # Found the total number of artists
-                        try:
-                            artist_count = int(match.group(1))
-                            self.total_artists = artist_count
-                            self.current_value = 5  # Start at 5%
-                            self.update_progress.emit(5, "Starting...", f"Found {artist_count} artists to process")
-                        except ValueError:
-                            pass
-                        return
-                    
-                    elif 'Total source artists with recommendations' in line:
-                        # Near completion
-                        try:
-                            rec_count = int(match.group(1))
-                            self.current_value = 95
-                            self.update_progress.emit(95, "Almost done...", f"Generated recommendations for {rec_count} artists")
-                        except ValueError:
-                            pass
-                        return
-                    
-                    elif 'Searching MusicBrainz for artist' in line:
-                        artist_name = match.group(1)
-                        # Small increment for each search
-                        self.current_value = min(95, self.current_value + 0.5)
-                        eta_string = self.calculate_eta()
-                        self.update_progress.emit(int(self.current_value), eta_string, f"Searching for: {artist_name}")
-                        return
-                    
-            # Generic progress indicators
-            # Terms that indicate work is happening
-            progress_terms = [
-                "Processing", "Searching", "Found", "Retrieved", "Generating", 
-                "Scanning", "Reading", "Writing", "Artist", "Genre", "Recommendation",
-                "discovered", "filtered", "pausing"
-            ]
             
-            # If line contains any progress terms, update slightly
-            if any(term.lower() in line.lower() for term in progress_terms):
-                # Only increment a small amount
-                self.current_value = min(self.current_value + 0.2, 99)
-                
-                # Only emit updates occasionally to avoid UI spam
-                if random.random() < 0.3:
-                    eta_string = self.calculate_eta()
-                    self.update_progress.emit(int(self.current_value), eta_string, line[:50] + "..." if len(line) > 50 else line)
-                    
+            # Fallback: small random increment if no specific markers found
+            if random.random() < 0.2:  # Only occasionally to prevent too frequent updates
+                self.current_value = min(99.9, self.current_value + 0.1)
+                eta_string = self.calculate_eta()
+                self.update_progress.emit(
+                    int(self.current_value), 
+                    eta_string, 
+                    "Processing..."
+                )
+        
         except Exception as e:
             # Log any errors in progress tracking
             error_msg = f"Error in progress tracking: {str(e)}"
