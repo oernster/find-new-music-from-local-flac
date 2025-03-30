@@ -1,6 +1,6 @@
 # Playlist Generator v2.0
 
-# Discover new music with generated new artists top tracks playlists from your local FLAC music organised by genre!!! 
+# Discover new music with generated new artists top tracks playlists from your local FLAC music organised by genre!!! Note might work with non FLAC too (untested).
 
 The UI/exe once generated will (Step 1) create a json file of keys from your FLAC local library directory (might work with non FLAC too, untested) with a list of values containing inspired artists, avoiding copycat bands etc. and ensuring that no inspired artists are the same as your source artists from your local FLAC library.  This uses the [MusicBrainz developer API](https://musicbrainz.org/).
 
