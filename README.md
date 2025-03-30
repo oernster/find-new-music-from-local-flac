@@ -2,7 +2,7 @@
 
 # Discover new music with generated new artists top tracks playlists from your local FLAC music organised by genre!!! 
 
-The UI/exe once generated will (Step 1) create a json file of keys from your FLAC local library directory with a list of values containing inspired artists, avoiding copycat bands etc. and ensuring that no inspired artists are the same as your source artists from your local FLAC library.  This uses the [MusicBrainz developer API](https://musicbrainz.org/).
+The UI/exe once generated will (Step 1) create a json file of keys from your FLAC local library directory (might work with non FLAC too, untested) with a list of values containing inspired artists, avoiding copycat bands etc. and ensuring that no inspired artists are the same as your source artists from your local FLAC library.  This uses the [MusicBrainz developer API](https://musicbrainz.org/).
 
 NOTE: If you have a large library like me (I have around 450 CDs ripped to FLAC) then the script will take a while to run.
 
