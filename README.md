@@ -8,7 +8,7 @@ NOTE: If you have a large library like me (I have around 450 CDs ripped to FLAC)
 
 The second button will create, based on the inspired artists lists (json file), spotify playlists based on genre.
 
-If you want to subsequently NOT use spotify (use the free service instead) and use a decent FLAC music source or other service, then I can recommend installing [FreeYourMusic](https://freeyourmusic.com/) to transfer your spotify playlists to your desired streaming service.  I use [Deezer](https://www.deezer.com/en/) myself.
+If you want to subsequently NOT use spotify (use the free service instead) and use a decent FLAC music source or other service, then I can recommend installing [TuneMyMusic](https://www.tunemymusic.com/) to transfer your spotify playlists to your desired streaming service.  I use [Deezer](https://www.deezer.com/en/) myself.
 
 The Deezer App doesn't support API usage currently for developers so this has to be a manual step via a service like Spotify as the initial playlist generating step; hence my approach. 
 
