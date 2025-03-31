@@ -1,4 +1,5 @@
-# Playlist Generator v2.0 - bugged - please be patient
+# Playlist Generator v2.3
+- Now with colour UI, correctly functioning colour changing progress bars, and correctly generating top tracks in playlists in _relevant_ playlist genres.
 
 # Discover new music with generated new artists top tracks playlists from your local FLAC music organised by genre!!! Note might work with non FLAC too (untested).
 
