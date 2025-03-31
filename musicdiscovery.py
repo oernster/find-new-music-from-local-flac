@@ -207,19 +207,49 @@ class MusicRecommendationService:
         return False
 
     def get_recommendations(self, source_artists: List[Tuple[str, int]], 
-                          limit: int = 10) -> Dict[str, List[str]]:
+                      limit: int = 5) -> Dict[str, List[str]]:
         """
-        Generate music recommendations.
+        Generate music recommendations based on artist genres.
         
         Args:
             source_artists (List[Tuple[str, int]]): List of (artist_name, count) tuples
-            limit (int): Maximum number of recommendations per artist (default 10)
+            limit (int): Maximum number of recommendations per artist (default 5)
         
         Returns:
             Dict[str, List[str]]: Dictionary of recommendations
         """
         recommendations = {}
-        global_recommended_artists = set()
+        all_recommended_artists = set()  # Global set to track all recommended artists
+
+        # Define broader genre families
+        genre_families = {
+            'electronic': ['electronic', 'electronica', 'trance', 'house', 'techno', 'edm', 
+                           'dubstep', 'drum and bass', 'ambient', 'idm', 'chillout', 
+                           'electro', 'dance', 'synth', 'synth-pop'],
+            
+            'rock': ['rock', 'alternative rock', 'indie rock', 'hard rock', 'classic rock', 
+                     'progressive rock', 'art rock', 'psychedelic rock', 'post-rock', 
+                     'garage rock', 'grunge', 'punk rock', 'metal', 'heavy metal', 'post-punk'],
+            
+            'pop': ['pop', 'dance pop', 'synth pop', 'indie pop', 'pop rock', 'electropop', 
+                    'dream pop', 'power pop', 'art pop', 'britpop', 'k-pop', 'j-pop'],
+            
+            'hip hop': ['hip hop', 'rap', 'trap', 'drill', 'grime', 'conscious rap', 'alternative hip hop'],
+            
+            'r&b': ['r&b', 'soul', 'neo-soul', 'contemporary r&b', 'funk'],
+            
+            'jazz': ['jazz', 'bebop', 'fusion', 'smooth jazz', 'jazz fusion', 
+                     'contemporary jazz', 'acid jazz', 'free jazz', 'swing', 'big band'],
+            
+            'classical': ['classical', 'baroque', 'romantic', 'contemporary classical', 
+                          'opera', 'chamber music', 'symphony', 'orchestral', 'piano'],
+            
+            'folk': ['folk', 'folk rock', 'indie folk', 'contemporary folk', 'traditional folk', 
+                     'singer-songwriter', 'americana', 'bluegrass'],
+            
+            'world': ['world', 'reggae', 'latin', 'afrobeat', 'bossa nova', 'flamenco', 
+                      'salsa', 'samba', 'traditional', 'celtic', 'worldbeat'],
+        }
 
         print(f"\n{Fore.CYAN}Starting recommendation process for {len(source_artists)} source artists.{Style.RESET_ALL}")
 
@@ -227,88 +257,127 @@ class MusicRecommendationService:
         valid_artists = [(artist, count) for artist, count in source_artists if not should_exclude_artist(artist)]
         print(f"{Fore.CYAN}Filtered {len(valid_artists)} valid artists for processing.{Style.RESET_ALL}")
 
-        # Shuffle the artists to get more varied recommendations
-        random.shuffle(valid_artists)
+        # Process all artists
+        total_artists = len(valid_artists)
         
-        # Only process a limited number of artists for performance
-        max_artists = min(len(valid_artists), 100)  # Set reasonable limit
-        artists_to_process = valid_artists[:max_artists]
-        total_artists = len(artists_to_process)
-        
-        for idx, (artist_name, _) in enumerate(artists_to_process):
+        for idx, (artist_name, _) in enumerate(valid_artists):
             try:
-                start_time = time.time()
-                
                 # Calculate and print progress
                 progress_percent = ((idx + 1) / total_artists) * 100
                 print(f"Progress: {progress_percent:.1f}% ({idx + 1}/{total_artists} artists)")
                 
-                print(f"\n{Fore.WHITE}{Style.BRIGHT}=== PROCESSING: {artist_name} ==={Style.RESET_ALL}")
+                print(f"{Fore.WHITE}{Style.BRIGHT}=== PROCESSING: {artist_name} ==={Style.RESET_ALL}")
                 
-                artist_info = self.music_db.search_artist(artist_name)
-                if not artist_info:
-                    print(f"{Fore.RED}FAILED: No MusicBrainz data found for '{artist_name}'. Skipping.{Style.RESET_ALL}")
+                # Search for the artist on MusicBrainz
+                print(f"{Fore.MAGENTA}DEBUG: Searching for artist '{artist_name}' on MusicBrainz{Style.RESET_ALL}")
+                artist_info = None
+                try:
+                    artist_info = self.music_db.search_artist(artist_name)
+                    if not artist_info:
+                        print(f"{Fore.YELLOW}Could not find MusicBrainz data for {artist_name}{Style.RESET_ALL}")
+                        continue
+                except Exception as e:
+                    print(f"{Fore.RED}ERROR: MusicBrainz search failed: {str(e)}{Style.RESET_ALL}")
                     continue
                 
-                print(f"{Fore.GREEN}FOUND: MusicBrainz ID: {artist_info.get('id', 'N/A')}{Style.RESET_ALL}")
+                # Force 3-second delay before next request
+                print(f"{Fore.YELLOW}Pausing for 2 seconds to avoid rate limiting...{Style.RESET_ALL}")
+                time.sleep(2)
                 
-                similar_artists = self.music_db.get_similar_artists(
-                    artist_id=artist_info['id'], 
-                    limit=100
-                )
+                # Get the artist's genres
+                print(f"{Fore.MAGENTA}DEBUG: Requesting genres for artist ID: {artist_info.get('id', 'unknown')}{Style.RESET_ALL}")
+                source_genres = []
+                try:
+                    source_genres = self.music_db.get_artist_genres(artist_info['id'])
+                    print(f"{Fore.MAGENTA}DEBUG: Genre request successful{Style.RESET_ALL}")
+                except Exception as e:
+                    print(f"{Fore.RED}ERROR: Failed to get genres: {str(e)}{Style.RESET_ALL}")
+                    source_genres = []
                 
-                print(f"{Fore.CYAN}Retrieved {len(similar_artists)} similar artists from MusicBrainz.{Style.RESET_ALL}")
+                # Skip if no genres found
+                if not source_genres:
+                    print(f"{Fore.YELLOW}No genres found for {artist_name}. Skipping.{Style.RESET_ALL}")
+                    continue
                 
-                filtered_recommendations = []
-                used_normalized_names = set()
-
-                for artist in similar_artists:
-                    recommended_name = artist.get('name', '').strip()
+                # Identify source artist's primary genre families
+                source_genre_families = set()
+                for genre in source_genres:
+                    genre_lower = genre.lower()
+                    for family_name, family_genres in genre_families.items():
+                        if any(family_genre in genre_lower for family_genre in family_genres):
+                            source_genre_families.add(family_name)
+                
+                # If no genre families match, skip this artist
+                if not source_genre_families:
+                    print(f"{Fore.YELLOW}No matching genre families for {artist_name}. Skipping.{Style.RESET_ALL}")
+                    continue
+                
+                print(f"{Fore.CYAN}Source artist genres: {source_genres}{Style.RESET_ALL}")
+                print(f"{Fore.CYAN}Source artist genre families: {list(source_genre_families)}{Style.RESET_ALL}")
+                
+                # Fetch a list of all artists
+                try:
+                    all_artists_candidates = self.music_db.fetch_artists_by_genres(
+                        list(source_genre_families), 
+                        limit=100  # Fetch more to allow for filtering
+                    )
+                except Exception as e:
+                    print(f"{Fore.RED}ERROR: Failed to fetch artists by genre: {str(e)}{Style.RESET_ALL}")
+                    continue
+                
+                # Filter candidates
+                candidates = []
+                for candidate_artist in all_artists_candidates:
+                    recommended_name = candidate_artist.get('name', '').strip()
                     
-                    if not recommended_name:
-                        print(f"{Fore.YELLOW}Encountered artist with an empty name. Skipping.{Style.RESET_ALL}")
+                    # Skip empty or problematic names
+                    if not recommended_name or should_exclude_artist(recommended_name):
                         continue
-
+                    
+                    # Skip if already in library or already recommended
                     normalized_name = normalize_artist_name(recommended_name)
-                    
-                    # Check if artist should be filtered
-                    in_global_set = normalized_name in global_recommended_artists
-                    in_library = self.is_library_artist(recommended_name)
-                    should_exclude = should_exclude_artist(recommended_name)
-                    already_used = normalized_name in used_normalized_names
-                    
-                    print(f"\n{Fore.CYAN}Evaluating: '{recommended_name}'{Style.RESET_ALL}")
-                    print(f"  Normalized: '{normalized_name}'")
-                    print(f"  Already Used: {already_used}")
-                    print(f"  Already Recommended Globally: {in_global_set}")
-                    print(f"  In Library: {in_library}")
-                    print(f"  Excluded: {should_exclude}")
-                    
-                    if already_used or in_global_set or in_library or should_exclude:
-                        print(f"  {Fore.RED}FILTERED: Not adding to recommendations{Style.RESET_ALL}")
+                    if (self.is_library_artist(recommended_name) or 
+                        normalized_name in all_recommended_artists):
                         continue
                     
-                    print(f"  {Fore.GREEN}ACCEPTED: Adding to recommendations{Style.RESET_ALL}")
-                    filtered_recommendations.append(recommended_name)
-                    used_normalized_names.add(normalized_name)
-                    global_recommended_artists.add(normalized_name)
-                    
-                    if len(filtered_recommendations) >= limit:
-                        break
-
+                    # Optional: Ensure a minimum similarity to source genres
+                    try:
+                        candidate_genres = self.music_db.get_artist_genres(candidate_artist['id'])
+                        
+                        # Calculate genre overlap
+                        genre_overlap = len(
+                            set(g.lower() for g in source_genres) & 
+                            set(g.lower() for g in candidate_genres)
+                        )
+                        
+                        # Score based on genre overlap and coverage
+                        genre_score = genre_overlap / len(source_genres) if source_genres else 0
+                        
+                        # If there's genre match, add to candidates
+                        if genre_score > 0.3:  # At least 30% genre overlap
+                            candidates.append((recommended_name, normalized_name, genre_score))
+                    except Exception:
+                        # If genre lookup fails, we'll skip this candidate
+                        continue
+                
+                # Sort candidates by genre score
+                candidates.sort(key=lambda x: x[2], reverse=True)
+                
+                # Take top recommendations
+                filtered_recommendations = []
+                for name, normalized_name, score in candidates[:limit]:
+                    filtered_recommendations.append(name)
+                    all_recommended_artists.add(normalized_name)
+                    print(f"{Fore.MAGENTA}DEBUG: Adding '{name}' to final recommendations (score: {score:.2f}){Style.RESET_ALL}")
+                
+                # Store recommendations if found
                 if filtered_recommendations:
-                    recommendations[artist_name] = filtered_recommendations[:limit]
+                    recommendations[artist_name] = filtered_recommendations
                     print(f"{Fore.GREEN}Added {len(filtered_recommendations)} recommendations for '{artist_name}'.{Style.RESET_ALL}")
+                    print(f"{Fore.GREEN}Recommendations: {filtered_recommendations}{Style.RESET_ALL}")
                 else:
                     print(f"{Fore.YELLOW}No valid recommendations found for '{artist_name}'.{Style.RESET_ALL}")
-
-                end_time = time.time()
-                print(f"{Fore.CYAN}Finished processing '{artist_name}' in {end_time - start_time:.2f} seconds.{Style.RESET_ALL}")
-                
-                # Pause between API requests to avoid rate limiting
-                print(f"{Fore.YELLOW}Pausing for 6 seconds to avoid rate limiting...{Style.RESET_ALL}")
-                time.sleep(6)
-                
+                    
             except Exception as e:
                 print(f"{Fore.RED}Error processing '{artist_name}': {e}{Style.RESET_ALL}")
                 import traceback
@@ -318,21 +387,20 @@ class MusicRecommendationService:
         print(f"Progress: 100.0% ({total_artists}/{total_artists} artists)")
         
         print(f"\n{Fore.MAGENTA}{Style.BRIGHT}=== RECOMMENDATION SUMMARY ==={Style.RESET_ALL}")
-        print(f"{Fore.CYAN}Total unique recommended artists: {len(global_recommended_artists)}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}Total source artists with recommendations: {len(recommendations)}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}Total unique recommended artists: {len(all_recommended_artists)}{Style.RESET_ALL}")
         
         # Print sample recommendations
         if recommendations:
             print(f"\n{Fore.GREEN}Sample recommendations:{Style.RESET_ALL}")
-            for i, (source, recs) in enumerate(list(recommendations.items())[:3]):
+            for source, recs in list(recommendations.items())[:3]:
                 print(f"{Fore.YELLOW}{source}: {Fore.BLUE}{recs}{Style.RESET_ALL}")
-                
+            
             if len(recommendations) > 3:
                 print(f"{Fore.YELLOW}... and {len(recommendations) - 3} more source artists{Style.RESET_ALL}")
         
         return recommendations
-
-
+    
 class MusicDiscoveryApp:
     """Main application for music discovery."""
     

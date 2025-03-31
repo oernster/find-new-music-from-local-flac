@@ -12,7 +12,7 @@ from colorama import Fore, Style
 
 # Constants
 DEFAULT_RELEASES_LIMIT = 3
-BASE_REQUEST_DELAY = 6  # seconds between API requests
+BASE_REQUEST_DELAY = 2  # seconds between API requests
 DEFAULT_RECOMMENDATION_LIMIT = 50
 
 
@@ -123,52 +123,134 @@ class MusicBrainzAPI(MusicDatabase):
         self.consecutive_failures = 0
         self.current_delay = BASE_REQUEST_DELAY
 
-    def _make_api_request(self, url: str, params: Dict, error_context: str) -> Optional[Dict]:
+    def _make_api_request(self, url: str, params: Dict, context: str) -> Optional[Dict]:
         """
-        Make an API request with retry logic and exponential backoff.
+        Make an API request with detailed retry and success logging.
         
         Args:
             url (str): API endpoint URL
             params (Dict): Query parameters
-            error_context (str): Context for error messages
+            context (str): Context for log messages
             
         Returns:
             Optional[Dict]: API response as a dictionary or None on failure
         """
-        base_delay = 1  # Initial delay
-        max_delay = 64  # Maximum delay
-        attempt = 0
-        max_retries = 5  # Max retries
-
-        while attempt < max_retries:
+        max_retries = 2
+        for attempt in range(max_retries):
             try:
+                # Prepare a readable context
+                readable_context = context
+                if 'query' in params:
+                    if 'artist:' in params['query']:
+                        readable_context = params['query'].split('artist:"')[1].split('"')[0]
+                    elif 'tag:' in params['query']:
+                        readable_context = params['query'].split('tag:"')[1].split('"')[0]
+                
+                # Log attempt start
+                print(f"{Fore.YELLOW}Attempt {attempt + 1} of {max_retries} for {readable_context}")
+                print(f"Request URL: {url}")
+                print(f"Request Params: {params}{Style.RESET_ALL}")
+                
+                # Wait 6 seconds between attempts
+                print(f"{Fore.YELLOW}Pausing for 2 seconds to respect rate limit{Style.RESET_ALL}")
+                time.sleep(2)
+                
+                # Make the request
                 response = requests.get(url, headers=self.headers, params=params)
+                
+                # Successful response
                 if response.status_code == 200:
+                    print(f"{Fore.GREEN}SUCCESS: {context} completed successfully{Style.RESET_ALL}")
                     return response.json()
-                elif response.status_code in (429, 503, 504):  # Handle rate limits and server availability
-                    wait_time = base_delay * (2 ** attempt)  # Exponential backoff
-                    wait_time = min(wait_time, max_delay)
-                    print(f"API rate limit or service unavailable. Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                    attempt += 1
-                else:
-                    print(f"HTTP Error {response.status_code} for {error_context}: {response.text}")
-                    break  # Non-retriable HTTP error
+                
+                # Rate limit or service issues
+                if response.status_code in (429, 503, 504):
+                    print(f"{Fore.RED}FAILURE: Rate limit or service unavailable (Status {response.status_code}) for {readable_context}. Retrying...{Style.RESET_ALL}")
+                    continue
+                
+                # Non-retriable error
+                print(f"{Fore.RED}FAILURE: HTTP Error {response.status_code} for {readable_context}: {response.text}{Style.RESET_ALL}")
+                return None
+            
             except requests.exceptions.RequestException as e:
-                if attempt >= max_retries - 1:
-                    print(f"Failed to complete request after {max_retries} attempts due to network error: {e}")
-                    break
-                else:
-                    wait_time = base_delay * (2 ** attempt)
-                    wait_time = min(wait_time, max_delay)
-                    print(f"Network error encountered: {e}. Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                    attempt += 1
-            except KeyboardInterrupt:
-                print("Operation cancelled by user.")
-                break
-
+                print(f"{Fore.RED}FAILURE: Network error on attempt {attempt + 1} for {readable_context}: {e}{Style.RESET_ALL}")
+                
+                # If it's the last attempt, return None
+                if attempt == max_retries - 1:
+                    print(f"{Fore.RED}FINAL FAILURE: All attempts failed for {readable_context}{Style.RESET_ALL}")
+                    return None
+        
+        # Fallback return if loop completes without returning
+        print(f"{Fore.RED}FINAL FAILURE: Unexpected termination for {readable_context}{Style.RESET_ALL}")
         return None
+
+    def search_artist_by_id(self, artist_id: str) -> Optional[Dict]:
+        """
+        Search for an artist directly by ID.
+        
+        Args:
+            artist_id (str): MusicBrainz ID of the artist
+            
+        Returns:
+            Optional[Dict]: Artist information or None if not found
+        """
+        try:
+            result = requests.get(
+                f"{self.base_url}artist/{artist_id}", 
+                headers=self.headers, 
+                params={'fmt': 'json'}
+            )
+            
+            if result.status_code == 200:
+                return result.json()
+            
+            return None
+        except Exception:
+            return None
+
+    def fetch_artists_by_genres(self, genres: List[str], limit: int = 50) -> List[Dict]:
+            """
+            Fetch artists matching specified genre families.
+            
+            Args:
+                genres (List[str]): List of genre families to search
+                limit (int): Maximum number of artists to return
+            
+            Returns:
+                List[Dict]: List of artist dictionaries
+            """
+            # Sanity check for input
+            if not genres:
+                return []
+            
+            # Use the first genre for searching
+            genre = genres[0]
+            
+            # Search artists by genre
+            genre_search_result = self._make_api_request(
+                f"{self.base_url}artist", 
+                {
+                    'query': f'tag:"{genre}"',
+                    'limit': limit,
+                    'fmt': 'json'
+                },
+                f"Searching for genre {genre}"
+            )
+            
+            # Return artists or empty list
+            if genre_search_result and genre_search_result.get('artists'):
+                # Deduplicate while preserving order
+                seen_ids = set()
+                unique_artists = []
+                for artist in genre_search_result['artists']:
+                    artist_id = artist.get('id')
+                    if artist_id and artist_id not in seen_ids:
+                        seen_ids.add(artist_id)
+                        unique_artists.append(artist)
+                
+                return unique_artists[:limit]
+            
+            return []
 
     def search_artist(self, artist_name: str) -> Optional[Dict]:
         """
@@ -189,14 +271,14 @@ class MusicBrainzAPI(MusicDatabase):
         result = self._make_api_request(
             f"{self.base_url}artist", 
             params, 
-            f"Error searching for artist {artist_name}"
+            f"Searching for artist '{artist_name}'"  # Use artist name instead of UUID
         )
         
         if result and result.get('artists') and len(result['artists']) > 0:
             return result['artists'][0]
         else:
             if result:  # Request succeeded but no artists found
-                print(f"{Fore.YELLOW}No artist found for {artist_name}{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}No artist found for '{artist_name}'{Style.RESET_ALL}")
             return None
     
     def get_similar_artists(self, artist_id: str, limit: int = DEFAULT_RECOMMENDATION_LIMIT, 
@@ -284,7 +366,7 @@ class MusicBrainzAPI(MusicDatabase):
         result = self._make_api_request(
             f"{self.base_url}artist/{artist_id}", 
             params, 
-            f"Error fetching artist relations for {artist_id}"
+            f"Fetching artist relations for {artist_id}"
         )
         
         if not result or 'relations' not in result:
@@ -315,7 +397,7 @@ class MusicBrainzAPI(MusicDatabase):
         genres_result = self._make_api_request(
             f"{self.base_url}artist/{artist_id}", 
             {'inc': 'genres', 'fmt': 'json'}, 
-            f"Error fetching genres for {artist_id}"
+            f"Fetching genres for {artist_id}"
         )
         
         # Extract genres
@@ -332,7 +414,7 @@ class MusicBrainzAPI(MusicDatabase):
                 'limit': 50,
                 'fmt': 'json'
             },
-            f"Error searching for genre {genres[0]}"
+            f"Searching for genre {genres[0]}"
         )
         
         return genre_search_result.get('artists', []) if genre_search_result else []
@@ -351,7 +433,7 @@ class MusicBrainzAPI(MusicDatabase):
         artist_result = self._make_api_request(
             f"{self.base_url}artist/{artist_id}", 
             {'fmt': 'json'}, 
-            f"Error fetching artist name for {artist_id}"
+            f"Fetching artist name for {artist_id}"
         )
         
         if not artist_result or 'name' not in artist_result:
@@ -372,7 +454,7 @@ class MusicBrainzAPI(MusicDatabase):
                 'limit': 50,
                 'fmt': 'json'
             },
-            f"Error searching for similar names"
+            f"Searching for similar names"
         )
         
         return name_search_result.get('artists', []) if name_search_result else []
@@ -397,7 +479,7 @@ class MusicBrainzAPI(MusicDatabase):
         result = self._make_api_request(
             f"{self.base_url}release", 
             params, 
-            f"Error getting releases for {artist_id}"
+            f"Getting releases for {artist_id}"
         )
         
         return result.get('releases', []) if result else []
@@ -420,7 +502,7 @@ class MusicBrainzAPI(MusicDatabase):
         result = self._make_api_request(
             f"{self.base_url}artist/{artist_id}", 
             params, 
-            f"Error getting genres for {artist_id}"
+            f"Requesting genres for artist"  # Remove the UUID
         )
         
         return [genre['name'] for genre in result.get('genres', [])] if result else []
