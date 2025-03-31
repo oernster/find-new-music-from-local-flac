@@ -20,7 +20,117 @@ from PyQt5.QtWidgets import (
     QTextEdit, QMenuBar, QMenu, QAction, QMessageBox, QProgressBar, QTabWidget, QWIDGETSIZE_MAX
 )
 from PyQt5.QtGui import QIcon, QFont, QColor, QPalette
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QMutex, QMutexLocker, pyqtSlot, QEvent
+
+
+# Thread-safe logger class to handle log operations safely
+class ThreadSafeLogger(QObject):
+    """Thread-safe logging mechanism to prevent UI crashes during log updates."""
+    
+    def __init__(self):
+        """Initialize the thread-safe logger."""
+        super().__init__()
+        self.mutex = QMutex()
+    
+    def log_discovery(self, message, text_edit, status_label=None):
+        """
+        Thread-safe logging for discovery output.
+        
+        Args:
+            message (str): Message to log
+            text_edit (QTextEdit): Text edit widget to update
+            status_label (QLabel, optional): Status label to update
+        """
+        with QMutexLocker(self.mutex):
+            # Queue this operation to the main thread
+            QApplication.instance().postEvent(
+                self,
+                LogEvent(lambda: self._update_log(text_edit, message, status_label))
+            )
+            # Also print to console as a backup
+            print(f"DISCOVERY: {message}")
+    
+    def log_spotify(self, message, text_edit, status_label=None):
+        """
+        Thread-safe logging for spotify output.
+        
+        Args:
+            message (str): Message to log
+            text_edit (QTextEdit): Text edit widget to update
+            status_label (QLabel, optional): Status label to update
+        """
+        with QMutexLocker(self.mutex):
+            # Queue this operation to the main thread
+            QApplication.instance().postEvent(
+                self,
+                LogEvent(lambda: self._update_log(text_edit, message, status_label))
+            )
+            # Also print to console as a backup
+            print(f"SPOTIFY: {message}")
+    
+    def log_debug(self, message, text_edit):
+        """
+        Thread-safe logging for debug output.
+        
+        Args:
+            message (str): Message to log
+            text_edit (QTextEdit): Text edit widget to update
+        """
+        with QMutexLocker(self.mutex):
+            # Queue this operation to the main thread
+            QApplication.instance().postEvent(
+                self,
+                LogEvent(lambda: self._update_log(text_edit, message))
+            )
+            # Always print to console
+            print(f"DEBUG: {message}")
+    
+    def _update_log(self, text_edit, message, status_label=None):
+        """
+        Update log text edit with the message.
+        
+        Args:
+            text_edit (QTextEdit): Text edit widget to update
+            message (str): Message to log
+            status_label (QLabel, optional): Status label to update
+        """
+        try:
+            if text_edit and not text_edit.isHidden():
+                # Add timestamp
+                timestamp = time.strftime("%H:%M:%S", time.localtime())
+                formatted_message = f"[{timestamp}] {message}"
+                
+                # Append message directly
+                text_edit.append(formatted_message)
+                
+                # Ensure latest message is visible
+                text_edit.ensureCursorVisible()
+                
+                # Update status label if provided and has truncate_status method
+                if status_label and hasattr(self.parent(), 'truncate_status'):
+                    truncated = self.parent().truncate_status(message)
+                    status_label.setText(truncated)
+        except Exception as e:
+            # Print any errors to console
+            print(f"Error in _update_log: {e} - Message was: {message}")
+
+
+# Custom event for handling logging operations
+class LogEvent(QEvent):
+    """Custom event for logging operations to be processed in the main thread."""
+    
+    # Define a custom event type
+    EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
+    
+    def __init__(self, callback):
+        """
+        Initialize the log event.
+        
+        Args:
+            callback (callable): Function to call when processing the event
+        """
+        super().__init__(self.EVENT_TYPE)
+        self.callback = callback
 
 
 class ColourProgressBar(QProgressBar):
@@ -145,6 +255,9 @@ class ScriptWorker(QThread):
         self.processed_artists = 0
         self.extra_args = []  # Additional command line arguments
         
+        # Log the initialization
+        print(f"Initializing {script_name} worker for: {script_path}")
+        
         # Progress tracking patterns
         self.progress_patterns = [
             # For ProgressBar updates (match percentage complete)
@@ -166,6 +279,19 @@ class ScriptWorker(QThread):
             re.compile(r'Total source artists with recommendations: (\d+)'),
             re.compile(r'Music discovery complete!')
         ]
+
+    # Helper method to safely emit signals for output
+    def safe_emit_output(self, message):
+        """Safely emit output signals with proper error handling."""
+        try:
+            # Always print to console first
+            print(f"WORKER: {message}")
+            
+            # Emit signals - these will be connected with Qt.QueuedConnection
+            self.output_text.emit(message)
+            self.console_output.emit(message)
+        except Exception as e:
+            print(f"Error emitting output: {e} - Message was: {message}")
 
     def find_venv_python(self, script_dir: str) -> str:
         """
@@ -196,11 +322,11 @@ class ScriptWorker(QThread):
         # Check each possible venv path
         for path in venv_paths:
             if os.path.exists(path):
-                self.output_text.emit(f"Found virtual environment Python at: {path}")
+                self.safe_emit_output(f"Found virtual environment Python at: {path}")
                 return path
                 
         # If no venv found, use system Python
-        self.output_text.emit("No virtual environment found, using system Python")
+        self.safe_emit_output("No virtual environment found, using system Python")
         return "python"
 
     def run(self):
@@ -220,13 +346,11 @@ class ScriptWorker(QThread):
             
             # DETAILED DEBUG: Print exactly what we're trying to execute
             debug_cmd = f"Executing: {' '.join(cmd)}"
-            self.output_text.emit(debug_cmd)
-            self.console_output.emit(debug_cmd)
+            self.safe_emit_output(debug_cmd)
             
             # Output current working directory for debugging
             cwd_msg = f"Working directory: {script_dir}"
-            self.output_text.emit(cwd_msg)
-            self.console_output.emit(cwd_msg)
+            self.safe_emit_output(cwd_msg)
             
             # Set up startupinfo to hide console window (Windows only)
             startupinfo = None
@@ -241,38 +365,49 @@ class ScriptWorker(QThread):
             stdout_queue = queue.Queue()
             stderr_queue = queue.Queue()
             
-            # Start the process
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                bufsize=1,  # Line buffered
-                cwd=script_dir,
-                startupinfo=startupinfo,
-                creationflags=creationflags
-            )
-    
+            # Start the process with explicit error handling
+            try:
+                # Start the process
+                self.process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    bufsize=1,  # Line buffered
+                    cwd=script_dir,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags
+                )
+                self.safe_emit_output(f"Process started with PID: {self.process.pid}")
+            except Exception as e:
+                error_msg = f"Failed to start process: {str(e)}"
+                self.safe_emit_output(error_msg)
+                self.running = False
+                self.script_finished.emit(False)
+                return
+
             # Thread for reading stdout
             def enqueue_stdout():
                 try:
                     for line in iter(self.process.stdout.readline, ''):
-                        stdout_queue.put(line.strip())
+                        if line.strip():  # Only queue non-empty lines
+                            stdout_queue.put(line.strip())
                     self.process.stdout.close()
                 except Exception as e:
                     stdout_queue.put(f"STDOUT Error: {e}")
-            
+
             # Thread for reading stderr
             def enqueue_stderr():
                 try:
                     for line in iter(self.process.stderr.readline, ''):
-                        stderr_queue.put(line.strip())
+                        if line.strip():  # Only queue non-empty lines
+                            stderr_queue.put(line.strip())
                     self.process.stderr.close()
                 except Exception as e:
                     stderr_queue.put(f"STDERR Error: {e}")
-    
+
             # Create and start reader threads
             stdout_thread = threading.Thread(target=enqueue_stdout)
             stderr_thread = threading.Thread(target=enqueue_stderr)
@@ -283,6 +418,16 @@ class ScriptWorker(QThread):
             stdout_thread.start()
             stderr_thread.start()
             
+            # Initial delay to ensure process has started
+            time.sleep(0.2)
+            
+            # Check if process immediately failed
+            if self.process.poll() is not None:
+                self.safe_emit_output(f"Process exited immediately with code: {self.process.returncode}")
+                self.running = False
+                self.script_finished.emit(False)
+                return
+            
             # Monitor and process output
             while self.running and self.process.poll() is None:
                 # Process stdout
@@ -290,8 +435,7 @@ class ScriptWorker(QThread):
                     while not stdout_queue.empty():
                         line = stdout_queue.get_nowait()
                         if line:
-                            self.output_text.emit(line)
-                            self.console_output.emit(line)
+                            self.safe_emit_output(line)
                             self.update_progress_from_line(line)
                 except queue.Empty:
                     pass
@@ -302,8 +446,7 @@ class ScriptWorker(QThread):
                         line = stderr_queue.get_nowait()
                         if line:
                             error_msg = f"ERROR: {line}"
-                            self.output_text.emit(error_msg)
-                            self.console_output.emit(error_msg)
+                            self.safe_emit_output(error_msg)
                 except queue.Empty:
                     pass
                 
@@ -321,28 +464,24 @@ class ScriptWorker(QThread):
             while not stdout_queue.empty():
                 line = stdout_queue.get()
                 if line:
-                    self.output_text.emit(line)
-                    self.console_output.emit(line)
+                    self.safe_emit_output(line)
             
             while not stderr_queue.empty():
                 line = stderr_queue.get()
                 if line:
                     error_msg = f"ERROR: {line}"
-                    self.output_text.emit(error_msg)
-                    self.console_output.emit(error_msg)
+                    self.safe_emit_output(error_msg)
             
             # Log completion status
             finish_msg = f"Process finished with return code: {return_code}"
-            self.output_text.emit(finish_msg)
-            self.console_output.emit(finish_msg)
+            self.safe_emit_output(finish_msg)
             
             # Signal completion
             self.script_finished.emit(return_code == 0)
             
         except Exception as e:
             error = f"Error running script: {str(e)}\n{traceback.format_exc()}"
-            self.output_text.emit(error)
-            self.console_output.emit(error)
+            self.safe_emit_output(error)
             self.running = False
             self.script_finished.emit(False)
         finally:
@@ -363,7 +502,7 @@ class ScriptWorker(QThread):
             if "starting playlist generation" in line.lower():
                 self.update_progress.emit(100, "Artist Classification Complete")
                 self.update_progress.emit(0, "Starting Playlist Generation")
-                self.output_text.emit("Phase transition detected: Starting playlist generation")
+                self.safe_emit_output("Phase transition detected: Starting playlist generation")
                 return True
                 
             # Look for progress percentage in exactly the format from the logs
@@ -373,8 +512,10 @@ class ScriptWorker(QThread):
                 current = int(progress_match.group(2))
                 total = int(progress_match.group(3))
                 
-                # Directly emit the progress value - no prefix, just the raw line
-                self.update_progress.emit(int(percentage), line)
+                # Convert percentage to integer and emit the progress signal
+                int_percentage = int(percentage)
+                self.update_progress.emit(int_percentage, line)
+                self.current_value = int_percentage  # Store the current value for reference
                 return True
                 
             # For "Organizing tracks for artist" messages, emit as-is without changing progress value
@@ -382,14 +523,28 @@ class ScriptWorker(QThread):
                 self.update_progress.emit(self.current_value, line)
                 return True
                 
+            # Check for progress lines in different formats
+            for pattern in self.progress_patterns:
+                match = pattern.search(line)
+                if match:
+                    # If we found a percentage directly
+                    if len(match.groups()) >= 1 and match.group(1) and match.group(1).replace('.', '', 1).isdigit():
+                        try:
+                            value = float(match.group(1))
+                            int_value = int(min(100, max(0, value)))  # Ensure value is between 0-100
+                            self.current_value = int_value
+                            self.update_progress.emit(int_value, line)
+                            return True
+                        except ValueError:
+                            pass
+                    
             # For all other lines, don't update progress
             return False
         
         except Exception as e:
             # Log errors in progress tracking
             error_msg = f"Error in progress tracking: {str(e)}"
-            self.output_text.emit(error_msg)
-            self.console_output.emit(error_msg)
+            self.safe_emit_output(error_msg)
             return False
 
     def stop(self):
@@ -401,19 +556,16 @@ class ScriptWorker(QThread):
                 # Give it a moment to terminate gracefully
                 for _ in range(10):
                     if self.process.poll() is not None:
-                        self.output_text.emit("Process terminated gracefully")
-                        self.console_output.emit("Process terminated gracefully")
+                        self.safe_emit_output("Process terminated gracefully")
                         break
                     time.sleep(0.1)
                 
                 # Force kill if still running
                 if self.process.poll() is None:
                     self.process.kill()
-                    self.output_text.emit("Process killed forcefully")
-                    self.console_output.emit("Process killed forcefully")
+                    self.safe_emit_output("Process killed forcefully")
             except Exception as e:
-                self.output_text.emit(f"Error stopping process: {str(e)}")
-                self.console_output.emit(f"Error stopping process: {str(e)}")
+                self.safe_emit_output(f"Error stopping process: {str(e)}")
 
 
 class SpotifyLauncher(QMainWindow):
@@ -565,6 +717,10 @@ class SpotifyLauncher(QMainWindow):
         self.discovery_worker = None
         self.spotify_worker = None
         
+        # Create thread-safe logger
+        self.logger = ThreadSafeLogger()
+        self.logger.setParent(self)  # Set parent to access truncate_status method
+        
         # Load and set the icon
         self.load_set_icon()
             
@@ -581,14 +737,55 @@ class SpotifyLauncher(QMainWindow):
         self.apply_rounded_style()
         self.set_mauve_titlebar()
         
-        # Apply pale yellow Windows title bar to match app background (#FFFFD0)
+        # Set up tab changed tracking
+        self.output_tabs.currentChanged.connect(self.tab_changed)
+        
+        # Apply pale yellow Windows title bar
+        self.apply_pale_yellow_titlebar()
+
+    def event(self, event):
+        """
+        Custom event handler to process log events in the main thread.
+        
+        Args:
+            event (QEvent): Event to process
+            
+        Returns:
+            bool: True if event was handled, otherwise result of parent implementation
+        """
+        if event.type() == LogEvent.EVENT_TYPE:
+            event.callback()
+            return True
+        return super().event(event)
+
+    def tab_changed(self, index):
+        """
+        Handle tab change events to maintain scroll position.
+        
+        Args:
+            index (int): Index of the selected tab
+        """
+        try:
+            # Get the current widget
+            current_widget = self.output_tabs.widget(index)
+            
+            # Ensure scroll to bottom for text edit widgets
+            if isinstance(current_widget, QTextEdit):
+                # Use the scrollbar directly for safe scrolling
+                scroll_bar = current_widget.verticalScrollBar()
+                if scroll_bar:
+                    scroll_bar.setValue(scroll_bar.maximum())
+        except Exception as e:
+            print(f"Error in tab_changed: {str(e)}")
+
+    def apply_pale_yellow_titlebar(self):
+        """Apply pale yellow background to Windows title bar."""
         try:
             # Define Windows API constants
             DWMWA_CAPTION_COLOR = 35  # DWM caption color attribute
             
-            # Convert RGB to COLORREF (0x00bbggrr)
-            # Using pale yellow color (#FFFFD0) to match app background
-            pale_yellow_color = 0x00D0FFFF  # COLORREF format for pale yellow
+            # Pale yellow color (#FFFFD0) in COLORREF format
+            pale_yellow_color = 0x00D0FFFF
             
             # Apply the color to the title bar
             windll.dwmapi.DwmSetWindowAttribute(
@@ -599,10 +796,9 @@ class SpotifyLauncher(QMainWindow):
             )
             
             self.log_status("Applied pale yellow background to Windows title bar")
-            
         except Exception as e:
             self.log_status(f"Error setting Windows title bar color: {str(e)}")
-            # Fallback method for older Windows versions or if the above method fails
+            # Fallback method
             try:
                 self.setStyleSheet(self.styleSheet() + """
                     QMainWindow::title {
@@ -614,21 +810,13 @@ class SpotifyLauncher(QMainWindow):
                 self.log_status(f"Error in fallback title styling: {str(e)}")
 
     def apply_yellow_windows_titlebar(self):
-        """
-        Apply a yellow background to the Windows system title bar.
-        """
-        # Import the necessary Windows-specific modules
-        # We need to add these imports at the top of the file
+        """Apply a yellow background to the Windows system title bar."""
         try:
-            import ctypes
-            from ctypes import windll, byref, sizeof, c_int
-            
             # Define Windows API constants
             DWMWA_CAPTION_COLOR = 35  # DWM caption color attribute
             
-            # Convert RGB to COLORREF (0x00bbggrr)
-            # Using a light yellow color (#FFFF99)
-            yellow_color = 0x0099FFFF  # COLORREF format for light yellow
+            # Light yellow color (#FFFF99) in COLORREF format
+            yellow_color = 0x0099FFFF
             
             # Apply the color to the title bar
             windll.dwmapi.DwmSetWindowAttribute(
@@ -639,10 +827,9 @@ class SpotifyLauncher(QMainWindow):
             )
             
             self.log_status("Applied yellow background to Windows title bar")
-            
         except Exception as e:
             self.log_status(f"Error setting Windows title bar color: {str(e)}")
-            # Fallback method for older Windows versions or if the above method fails
+            # Fallback method
             try:
                 self.setStyleSheet(self.styleSheet() + """
                     QMainWindow::title {
@@ -654,12 +841,8 @@ class SpotifyLauncher(QMainWindow):
                 self.log_status(f"Error in fallback title styling: {str(e)}")
 
     def set_mauve_titlebar(self):
-        """
-        Set a mauve background for the title bar while preserving the menu bar.
-        This needs to be called in the __init__ method of SpotifyLauncher.
-        """
-        # First approach: Try to use palette to set the title bar color on supported platforms
-        # This is a more standard approach that keeps menus intact but may not work on all systems
+        """Set a mauve background for the title bar while preserving the menu bar."""
+        # Use palette to set the title bar color
         palette = self.palette()
         mauve_color = QColor("#E0B0FF")  # Mauve color
         palette.setColor(QPalette.Window, mauve_color)
@@ -710,40 +893,8 @@ class SpotifyLauncher(QMainWindow):
         else:
             self.showMaximized()
 
-    def mousePressEvent(self, event):
-        """Handle mouse press events for custom title bar dragging."""
-        if hasattr(self, 'title_bar') and event.button() == Qt.LeftButton:
-            # Check if click is within title bar
-            if self.title_bar.geometry().contains(event.pos()):
-                self.dragging = True
-                self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
-                event.accept()
-            else:
-                super().mousePressEvent(event)
-        else:
-            super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        """Handle mouse move events for custom title bar dragging."""
-        if hasattr(self, 'dragging') and self.dragging and event.buttons() & Qt.LeftButton:
-            self.move(event.globalPos() - self.drag_position)
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        """Handle mouse release events for custom title bar dragging."""
-        if hasattr(self, 'dragging') and event.button() == Qt.LeftButton:
-            self.dragging = False
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
-
     def apply_rounded_style(self):
-        """
-        Apply rounded corners style and custom colors to the application's UI elements.
-        To be added to the SpotifyLauncher class.
-        """
+        """Apply rounded corners style and custom colors to the application's UI elements."""
         # Pale yellow for app background
         app_background_color = "#FFFFD0"  # Pale yellow
         button_background_color = "#B3D9FF"  # Light blue
@@ -843,13 +994,13 @@ class SpotifyLauncher(QMainWindow):
         # Toggle debug tab 
         self.toggle_debug_action = QAction('Show Debug Tab', self, checkable=True)
         self.toggle_debug_action.setChecked(False)
-        self.toggle_debug_action.triggered.connect(self.toggle_debug_tab)
+        self.toggle_debug_action.triggered.connect(self.safe_toggle_debug_tab)
         view_menu.addAction(self.toggle_debug_action)
         
         # Toggle console output
         self.toggle_console_action = QAction('Show Console Output', self, checkable=True)
         self.toggle_console_action.setChecked(True)  # On by default
-        self.toggle_console_action.triggered.connect(self.toggle_console_output)
+        self.toggle_console_action.triggered.connect(self.safe_toggle_console_output)
         view_menu.addAction(self.toggle_console_action)
         
         # Help menu
@@ -865,6 +1016,46 @@ class SpotifyLauncher(QMainWindow):
         view_gpl_action.triggered.connect(lambda: webbrowser.open('https://www.gnu.org/licenses/gpl-3.0.html'))
         help_menu.addAction(view_gpl_action)
 
+    def safe_toggle_debug_tab(self, checked):
+        """
+        Safely toggle the debug tab with error handling.
+        
+        Args:
+            checked (bool): Whether debug tab should be visible
+        """
+        try:
+            self.toggle_debug_tab(checked)
+        except Exception as e:
+            # If any exception occurs, restore the previous state
+            self.log_status(f"Error toggling debug tab: {str(e)}")
+            QMessageBox.warning(self, "View Error", 
+                              f"An error occurred while changing the view: {str(e)}")
+            # Attempt to restore the action state (without triggering another toggle)
+            current_visible = self.output_tabs.indexOf(self.debug_output) != -1
+            self.toggle_debug_action.blockSignals(True)
+            self.toggle_debug_action.setChecked(current_visible)
+            self.toggle_debug_action.blockSignals(False)
+
+    def safe_toggle_console_output(self, checked):
+        """
+        Safely toggle the console output with error handling.
+        
+        Args:
+            checked (bool): Whether console output should be visible
+        """
+        try:
+            self.toggle_console_output(checked)
+        except Exception as e:
+            # If any exception occurs, restore the previous state
+            self.log_status(f"Error toggling console output: {str(e)}")
+            QMessageBox.warning(self, "View Error", 
+                              f"An error occurred while changing the view: {str(e)}")
+            # Attempt to restore the action state (without triggering another toggle)
+            current_visible = self.output_tabs.isVisible()
+            self.toggle_console_action.blockSignals(True)
+            self.toggle_console_action.setChecked(current_visible)
+            self.toggle_console_action.blockSignals(False)
+
     def toggle_debug_tab(self, checked):
         """
         Toggle the visibility of the debug tab.
@@ -872,6 +1063,23 @@ class SpotifyLauncher(QMainWindow):
         Args:
             checked (bool): Whether to show the debug tab
         """
+        # Check if any processes are running
+        processes_running = False
+        if hasattr(self, 'discovery_worker') and self.discovery_worker and self.discovery_worker.isRunning():
+            processes_running = True
+        if hasattr(self, 'spotify_worker') and self.spotify_worker and self.spotify_worker.isRunning():
+            processes_running = True
+        
+        # If processes are running, show a warning and abort the toggle
+        if processes_running:
+            QMessageBox.warning(self, "Cannot Change View", 
+                                "Cannot change debug tab visibility while processes are running.\n"
+                                "Please wait for the current operation to complete.")
+            # Restore the action state to match the current visibility
+            current_visible = self.output_tabs.indexOf(self.debug_output) != -1
+            self.toggle_debug_action.setChecked(current_visible)
+            return
+        
         # The tab is always there, we just need to handle showing/hiding it
         if checked:
             if self.output_tabs.indexOf(self.debug_output) == -1:
@@ -889,6 +1097,22 @@ class SpotifyLauncher(QMainWindow):
         Args:
             checked (bool): Whether console output should be visible
         """
+        # Check if any processes are running
+        processes_running = False
+        if hasattr(self, 'discovery_worker') and self.discovery_worker and self.discovery_worker.isRunning():
+            processes_running = True
+        if hasattr(self, 'spotify_worker') and self.spotify_worker and self.spotify_worker.isRunning():
+            processes_running = True
+        
+        # If processes are running, show a warning and abort the toggle
+        if processes_running:
+            QMessageBox.warning(self, "Cannot Change View", 
+                                "Cannot change console visibility while processes are running.\n"
+                                "Please wait for the current operation to complete.")
+            # Restore the action state to match the current visibility
+            self.toggle_console_action.setChecked(self.output_tabs.isVisible())
+            return
+        
         # Toggle visibility of console output
         self.output_tabs.setVisible(checked)
         
@@ -1027,39 +1251,125 @@ class SpotifyLauncher(QMainWindow):
 
     def log_status(self, message: str):
         """
-        Add a message to the debug output.
+        Thread-safe logging to add a message to the debug output.
         
         Args:
             message (str): Message to log
         """
-        if hasattr(self, 'debug_output') and self.debug_output is not None:
-            self.debug_output.append(message)
-            # Ensure the latest message is visible
-            self.debug_output.ensureCursorVisible()
-        print(message)  # Also print to console for debugging
+        try:
+            # Always print to console as a backup
+            print(f"DEBUG: {message}")
+            
+            # Direct approach when in the main thread
+            if QThread.currentThread() == QApplication.instance().thread():
+                if hasattr(self, 'debug_output') and self.debug_output is not None:
+                    timestamp = time.strftime("%H:%M:%S", time.localtime())
+                    formatted_message = f"[{timestamp}] {message}"
+                    self.debug_output.append(formatted_message)
+                    self.debug_output.ensureCursorVisible()
+            else:
+                # Use the logger when in a worker thread
+                if hasattr(self, 'logger') and self.logger is not None and hasattr(self, 'debug_output'):
+                    self.logger.log_debug(message, self.debug_output)
+                elif hasattr(self, 'debug_output') and self.debug_output is not None:
+                    # Fallback using signals/slots
+                    QMetaObject.invokeMethod(
+                        self.debug_output,
+                        "append",
+                        Qt.QueuedConnection,
+                        QArgument("QString", f"[{time.strftime('%H:%M:%S', time.localtime())}] {message}")
+                    )
+                    QMetaObject.invokeMethod(
+                        self.debug_output,
+                        "ensureCursorVisible",
+                        Qt.QueuedConnection
+                    )
+        except Exception as e:
+            # Last resort fallback
+            print(f"Error in log_status: {e} - Message was: {message}")
 
     def log_discovery_output(self, message: str):
         """
-        Add a message to the Music Discovery output.
+        Thread-safe logging to add a message to the Music Discovery output.
         
         Args:
             message (str): Message to log
         """
-        if hasattr(self, 'discovery_output') and self.discovery_output is not None:
-            self.discovery_output.append(message)
-            self.discovery_output.ensureCursorVisible()
+        try:
+            # Direct approach when in the main thread
+            if QThread.currentThread() == QApplication.instance().thread():
+                timestamp = time.strftime("%H:%M:%S", time.localtime())
+                formatted_message = f"[{timestamp}] {message}"
+                self.discovery_output.append(formatted_message)
+                self.discovery_output.ensureCursorVisible()
+                
+                # Also update status label if it's a meaningful status message
+                if len(message) > 3 and not message.startswith("Executing:") and not message.startswith("Working directory:"):
+                    self.discovery_status.setText(self.truncate_status(message))
+            else:
+                # Use the logger when in a worker thread
+                if hasattr(self, 'logger') and self.logger is not None:
+                    self.logger.log_discovery(message, self.discovery_output, self.discovery_status)
+                else:
+                    # Fallback using signals/slots
+                    print(f"Logging from thread: {message}")
+                    # Use invokeMethod directly as fallback
+                    QMetaObject.invokeMethod(
+                        self.discovery_output,
+                        "append",
+                        Qt.QueuedConnection,
+                        QArgument("QString", f"[{time.strftime('%H:%M:%S', time.localtime())}] {message}")
+                    )
+                    QMetaObject.invokeMethod(
+                        self.discovery_output,
+                        "ensureCursorVisible",
+                        Qt.QueuedConnection
+                    )
+        except Exception as e:
+            # Last resort fallback
+            print(f"Error in log_discovery_output: {e} - Message was: {message}")
 
     def log_spotify_output(self, message: str):
         """
-        Add a message to the Spotify Client output.
+        Thread-safe logging to add a message to the Spotify Client output.
         
         Args:
             message (str): Message to log
         """
-        if hasattr(self, 'spotify_output') and self.spotify_output is not None:
-            self.spotify_output.append(message)
-            self.spotify_output.ensureCursorVisible()
-
+        try:
+            # Direct approach when in the main thread
+            if QThread.currentThread() == QApplication.instance().thread():
+                timestamp = time.strftime("%H:%M:%S", time.localtime())
+                formatted_message = f"[{timestamp}] {message}"
+                self.spotify_output.append(formatted_message)
+                self.spotify_output.ensureCursorVisible()
+                
+                # Update appropriate status label
+                status_label = self.spotify_status2 if self.phase2_active else self.spotify_status1
+                status_label.setText(self.truncate_status(message))
+            else:
+                # Use the logger when in a worker thread
+                if hasattr(self, 'logger') and self.logger is not None:
+                    status_label = self.spotify_status2 if self.phase2_active else self.spotify_status1
+                    self.logger.log_spotify(message, self.spotify_output, status_label)
+                else:
+                    # Fallback using signals/slots
+                    print(f"Spotify logging from thread: {message}")
+                    # Use invokeMethod directly as fallback
+                    QMetaObject.invokeMethod(
+                        self.spotify_output,
+                        "append",
+                        Qt.QueuedConnection,
+                        QArgument("QString", f"[{time.strftime('%H:%M:%S', time.localtime())}] {message}")
+                    )
+                    QMetaObject.invokeMethod(
+                        self.spotify_output,
+                        "ensureCursorVisible",
+                        Qt.QueuedConnection
+                    )
+        except Exception as e:
+            # Last resort fallback
+            print(f"Error in log_spotify_output: {e} - Message was: {message}")
     def launch_music_discovery(self):
         """Launch the Music Discovery script with progress tracking."""
         if self.discovery_worker and self.discovery_worker.isRunning():
@@ -1091,22 +1401,41 @@ class SpotifyLauncher(QMainWindow):
 
         self.log_status(f"Found script at: {script_path}")
 
-        # Create and start the worker thread
-        self.discovery_worker = ScriptWorker(script_path, "Music Discovery")
+        try:
+            # Create and start the worker thread
+            self.discovery_worker = ScriptWorker(script_path, "Music Discovery")
 
-        # Connect signals
-        self.discovery_worker.update_progress.connect(self.update_discovery_progress)
-        self.discovery_worker.script_finished.connect(self.discovery_finished)
-        self.discovery_worker.output_text.connect(self.log_status)
-        self.discovery_worker.console_output.connect(self.log_discovery_output)
+            # Connect signals - need to ensure proper Qt connection type
+            self.discovery_worker.update_progress.connect(self.update_discovery_progress, Qt.QueuedConnection)
+            self.discovery_worker.script_finished.connect(self.discovery_finished, Qt.QueuedConnection)
+            self.discovery_worker.output_text.connect(self.log_status, Qt.QueuedConnection)
+            self.discovery_worker.console_output.connect(self.log_discovery_output, Qt.QueuedConnection)
 
-        # Add flag to save recommendations in music directory
-        self.discovery_worker.extra_args = ["--save-in-music-dir"]
+            # Add flag to save recommendations in music directory
+            self.discovery_worker.extra_args = ["--save-in-music-dir"]
 
-        # Start the thread
-        self.discovery_worker.start()
+            # Log before starting the thread
+            self.log_status("Music Discovery thread created, starting...")
+            self.log_discovery_output("Starting Music Discovery process...")
 
-        self.log_status("Music Discovery initiated...")
+            # Start the thread
+            self.discovery_worker.start()
+
+            # Verify thread started
+            if not self.discovery_worker.isRunning():
+                raise RuntimeError("Failed to start worker thread")
+
+            self.log_status("Music Discovery thread started successfully")
+            
+        except Exception as e:
+            error_msg = f"Error launching Music Discovery: {str(e)}\n{traceback.format_exc()}"
+            self.log_status(error_msg)
+            self.log_discovery_output(f"ERROR: {str(e)}")
+            
+            # Re-enable buttons on error
+            self.discovery_button.setEnabled(True)
+            self.spotify_button.setEnabled(True)
+            self.discovery_status.setText("Error starting process")
 
     def update_discovery_progress(self, value: int, status: str):
         """
@@ -1116,31 +1445,38 @@ class SpotifyLauncher(QMainWindow):
             value (int): Progress value (0-100)
             status (str): Status message
         """
-        # Update the progress bar
-        self.discovery_progress.setValue(value)
-        
-        # Filter out unusual characters and problematic status messages
-        if status:
-            # Skip certain status messages entirely
-            skip_messages = [
-                "Executing:", 
-                "Working directory:", 
-                "\033", # ANSI escape codes
-                "Progress: |"  # Console progress bar
-            ]
+        try:
+            # Direct update in the same thread for the progress bar
+            self.discovery_progress.setValue(value)
             
-            if any(msg in status for msg in skip_messages):
-                return
-            
-            # Filter out control characters and non-printable characters
-            filtered_status = ''.join(c for c in status if c.isprintable() and ord(c) < 127)
-            
-            # Only update if we have a meaningful filtered status
-            if filtered_status and len(filtered_status) > 3:
-                self.discovery_status.setText(self.truncate_status(filtered_status))
-        
-        # Force UI refresh
-        QApplication.processEvents()
+            # Filter out unusual characters and problematic status messages
+            if status:
+                # Skip certain status messages entirely
+                skip_messages = [
+                    "Executing:", 
+                    "Working directory:", 
+                    "\033", # ANSI escape codes
+                    "Progress: |"  # Console progress bar
+                ]
+                
+                if any(msg in status for msg in skip_messages):
+                    return
+                
+                # Filter out control characters and non-printable characters
+                filtered_status = ''.join(c for c in status if c.isprintable() and ord(c) < 127)
+                
+                # Only update if we have a meaningful filtered status
+                if filtered_status and len(filtered_status) > 3:
+                    # Direct update for the status text
+                    truncated_status = self.truncate_status(filtered_status)
+                    self.discovery_status.setText(truncated_status)
+                    
+                    # Also log it to the output
+                    self.log_discovery_output(f"Progress: {value}% - {truncated_status}")
+        except Exception as e:
+            # Log the error but don't crash
+            print(f"Error in update_discovery_progress: {str(e)}")
+            self.log_status(f"Error updating progress: {str(e)}")
 
     def discovery_finished(self, success: bool):
         """
@@ -1270,51 +1606,115 @@ class SpotifyLauncher(QMainWindow):
             value (int): Progress value (0-100)
             status (str): Status message
         """
-        # Phase transition detection
-        if "starting playlist generation" in status.lower():
-            # Complete Phase 1
-            self.spotify_progress1.setValue(100)
-            self.spotify_status1.setText("Artist Classification Complete")
-            # Initialize Phase 2
-            self.phase2_active = True
-            self.spotify_progress2.setValue(0)
-            self.spotify_status2.setText("Starting Playlist Generation")
-            return
+        try:
+            # Phase transition detection
+            if "starting playlist generation" in status.lower():
+                # Complete Phase 1
+                QMetaObject.invokeMethod(
+                    self.spotify_progress1, 
+                    "setValue", 
+                    Qt.QueuedConnection,
+                    QArgument("int", 100)
+                )
+                QMetaObject.invokeMethod(
+                    self.spotify_status1, 
+                    "setText", 
+                    Qt.QueuedConnection,
+                    QArgument("QString", "Artist Classification Complete")
+                )
+                # Initialize Phase 2
+                self.phase2_active = True
+                QMetaObject.invokeMethod(
+                    self.spotify_progress2, 
+                    "setValue", 
+                    Qt.QueuedConnection,
+                    QArgument("int", 0)
+                )
+                QMetaObject.invokeMethod(
+                    self.spotify_status2, 
+                    "setText", 
+                    Qt.QueuedConnection,
+                    QArgument("QString", "Starting Playlist Generation")
+                )
+                return
+                
+            # Look for specific progress updates in the format "Progress: X.X% (Y/Z artists)"
+            progress_match = re.search(r'Progress: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
+            if progress_match:
+                percentage = float(progress_match.group(1))
+                current = int(progress_match.group(2))
+                total = int(progress_match.group(3))
+                
+                # If we're in Phase 2 (after "Artist Classification Complete")
+                if self.phase2_active:
+                    # Update the Phase 2 progress bar
+                    QMetaObject.invokeMethod(
+                        self.spotify_progress2, 
+                        "setValue", 
+                        Qt.QueuedConnection,
+                        QArgument("int", int(percentage))
+                    )
+                    QMetaObject.invokeMethod(
+                        self.spotify_status2, 
+                        "setText", 
+                        Qt.QueuedConnection,
+                        QArgument("QString", f"Processing: {current} of {total} artists")
+                    )
+                else:
+                    # Update the Phase 1 progress bar
+                    QMetaObject.invokeMethod(
+                        self.spotify_progress1, 
+                        "setValue", 
+                        Qt.QueuedConnection,
+                        QArgument("int", int(percentage))
+                    )
+                    QMetaObject.invokeMethod(
+                        self.spotify_status1, 
+                        "setText", 
+                        Qt.QueuedConnection,
+                        QArgument("QString", f"Processing artists: {current} of {total}")
+                    )
+                return
             
-        # Look for specific progress updates in the format "Progress: X.X% (Y/Z artists)"
-        progress_match = re.search(r'Progress: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
-        if progress_match:
-            percentage = float(progress_match.group(1))
-            current = int(progress_match.group(2))
-            total = int(progress_match.group(3))
+            # Handle "Organizing tracks for artist" messages in Phase 2
+            if self.phase2_active and "organizing tracks for artist:" in status.lower():
+                # Extract artist name
+                artist_match = re.search(r'organizing tracks for artist: (.+)', status, re.IGNORECASE)
+                if artist_match:
+                    artist_name = artist_match.group(1)
+                    QMetaObject.invokeMethod(
+                        self.spotify_status2, 
+                        "setText", 
+                        Qt.QueuedConnection,
+                        QArgument("QString", f"Processing artist: {artist_name}")
+                    )
+                return
             
-            # If we're in Phase 2 (after "Artist Classification Complete")
+            # Regular status updates - only update text, not progress bar
             if self.phase2_active:
-                # Update the Phase 2 progress bar
-                self.spotify_progress2.setValue(int(percentage))
-                self.spotify_status2.setText(f"Processing: {current} of {total} artists")
+                QMetaObject.invokeMethod(
+                    self.spotify_status2, 
+                    "setText", 
+                    Qt.QueuedConnection,
+                    QArgument("QString", self.truncate_status(status))
+                )
             else:
-                # Update the Phase 1 progress bar
-                self.spotify_progress1.setValue(int(percentage))
-                self.spotify_status1.setText(f"Processing artists: {current} of {total}")
-            return
-        
-        # Handle "Organizing tracks for artist" messages in Phase 2
-        if self.phase2_active and "organizing tracks for artist:" in status.lower():
-            # Extract artist name
-            artist_match = re.search(r'organizing tracks for artist: (.+)', status, re.IGNORECASE)
-            if artist_match:
-                artist_name = artist_match.group(1)
-                self.spotify_status2.setText(f"Processing artist: {artist_name}")
-            return
-        
-        # Regular status updates - only update text, not progress bar
-        if self.phase2_active:
-            self.spotify_status2.setText(self.truncate_status(status))
-        else:
-            # Only update Phase 1 if not yet in Phase 2
-            self.spotify_progress1.setValue(value)
-            self.spotify_status1.setText(self.truncate_status(status))
+                # Only update Phase 1 if not yet in Phase 2
+                QMetaObject.invokeMethod(
+                    self.spotify_progress1, 
+                    "setValue", 
+                    Qt.QueuedConnection,
+                    QArgument("int", value)
+                )
+                QMetaObject.invokeMethod(
+                    self.spotify_status1, 
+                    "setText", 
+                    Qt.QueuedConnection,
+                    QArgument("QString", self.truncate_status(status))
+                )
+        except Exception as e:
+            # Log the error but don't crash
+            print(f"Error in update_spotify_progress: {str(e)}")
     
     def spotify_finished(self, success: bool):
         """
