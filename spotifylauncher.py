@@ -1147,7 +1147,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application."""
         about_text = """
-    Playlist Generator v2.3
+    Playlist Generator v2.4
     By Oliver Ernster
 
     A tool for discovering music and generating
