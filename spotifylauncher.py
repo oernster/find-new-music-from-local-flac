@@ -12,12 +12,14 @@ import traceback
 import queue
 import re
 from typing import List, Optional, Set, Tuple
+import ctypes
+from ctypes import windll, byref, sizeof, c_int
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLabel, 
-    QTextEdit, QMenuBar, QMenu, QAction, QMessageBox, QProgressBar, QTabWidget
+    QTextEdit, QMenuBar, QMenu, QAction, QMessageBox, QProgressBar, QTabWidget, QWIDGETSIZE_MAX
 )
-from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtGui import QIcon, QFont, QColor, QPalette
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 
@@ -424,7 +426,7 @@ class SpotifyLauncher(QMainWindow):
         self.phase2_active = False
         
         # Configure window
-        self.setWindowTitle("Playlist Generator")
+        self.setWindowTitle("♫  Playlist Generator ♫")
         self.setMinimumSize(700, 700)  # Larger window to accommodate console output
         
         # Set up central widget
@@ -441,8 +443,8 @@ class SpotifyLauncher(QMainWindow):
         upper_layout = QVBoxLayout(upper_widget)
         upper_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Title label
-        title = QLabel("Playlist Generator")
+        # Title label with musical notes
+        title = QLabel("♫  Playlist Generator ♫")
         title.setAlignment(Qt.AlignCenter)
         title.setFont(QFont("Arial", 16, QFont.Bold))
         upper_layout.addWidget(title)
@@ -574,6 +576,262 @@ class SpotifyLauncher(QMainWindow):
         
         # Hide debug tab by default
         self.toggle_debug_tab(False)
+        
+        # Apply rounded corners style
+        self.apply_rounded_style()
+        self.set_mauve_titlebar()
+        
+        # Apply pale yellow Windows title bar to match app background (#FFFFD0)
+        try:
+            # Define Windows API constants
+            DWMWA_CAPTION_COLOR = 35  # DWM caption color attribute
+            
+            # Convert RGB to COLORREF (0x00bbggrr)
+            # Using pale yellow color (#FFFFD0) to match app background
+            pale_yellow_color = 0x00D0FFFF  # COLORREF format for pale yellow
+            
+            # Apply the color to the title bar
+            windll.dwmapi.DwmSetWindowAttribute(
+                int(self.winId()),
+                DWMWA_CAPTION_COLOR,
+                byref(c_int(pale_yellow_color)),
+                sizeof(c_int)
+            )
+            
+            self.log_status("Applied pale yellow background to Windows title bar")
+            
+        except Exception as e:
+            self.log_status(f"Error setting Windows title bar color: {str(e)}")
+            # Fallback method for older Windows versions or if the above method fails
+            try:
+                self.setStyleSheet(self.styleSheet() + """
+                    QMainWindow::title {
+                        background-color: #FFFFD0;
+                    }
+                """)
+                self.log_status("Applied fallback pale yellow title styling")
+            except Exception as e:
+                self.log_status(f"Error in fallback title styling: {str(e)}")
+
+    def apply_yellow_windows_titlebar(self):
+        """
+        Apply a yellow background to the Windows system title bar.
+        """
+        # Import the necessary Windows-specific modules
+        # We need to add these imports at the top of the file
+        try:
+            import ctypes
+            from ctypes import windll, byref, sizeof, c_int
+            
+            # Define Windows API constants
+            DWMWA_CAPTION_COLOR = 35  # DWM caption color attribute
+            
+            # Convert RGB to COLORREF (0x00bbggrr)
+            # Using a light yellow color (#FFFF99)
+            yellow_color = 0x0099FFFF  # COLORREF format for light yellow
+            
+            # Apply the color to the title bar
+            windll.dwmapi.DwmSetWindowAttribute(
+                int(self.winId()),
+                DWMWA_CAPTION_COLOR,
+                byref(c_int(yellow_color)),
+                sizeof(c_int)
+            )
+            
+            self.log_status("Applied yellow background to Windows title bar")
+            
+        except Exception as e:
+            self.log_status(f"Error setting Windows title bar color: {str(e)}")
+            # Fallback method for older Windows versions or if the above method fails
+            try:
+                self.setStyleSheet(self.styleSheet() + """
+                    QMainWindow::title {
+                        background-color: #FFFF99;
+                    }
+                """)
+                self.log_status("Applied fallback yellow title styling")
+            except Exception as e:
+                self.log_status(f"Error in fallback title styling: {str(e)}")
+
+    def set_mauve_titlebar(self):
+        """
+        Set a mauve background for the title bar while preserving the menu bar.
+        This needs to be called in the __init__ method of SpotifyLauncher.
+        """
+        # First approach: Try to use palette to set the title bar color on supported platforms
+        # This is a more standard approach that keeps menus intact but may not work on all systems
+        palette = self.palette()
+        mauve_color = QColor("#E0B0FF")  # Mauve color
+        palette.setColor(QPalette.Window, mauve_color)
+        palette.setColor(QPalette.WindowText, QColor("#333333"))
+        self.setPalette(palette)
+        
+        # Make the menubar match the mauve color
+        menubar = self.menuBar()
+        menubar.setStyleSheet("""
+            QMenuBar {
+                background-color: #E0B0FF;
+                color: #333333;
+            }
+            QMenuBar::item {
+                background-color: #E0B0FF;
+                color: #333333;
+            }
+            QMenuBar::item:selected {
+                background-color: #D0A0EF;
+            }
+            QMenu {
+                background-color: #F5E8FF;
+                color: #333333;
+                border: 1px solid #D0A0EF;
+            }
+            QMenu::item:selected {
+                background-color: #E0B0FF;
+            }
+        """)
+        
+        # Style the application window
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #FFFFD0;
+            }
+            QMainWindow::title {
+                background-color: #E0B0FF;
+            }
+            QStatusBar {
+                background-color: #E0B0FF;
+            }
+        """)
+
+    def toggle_maximize(self):
+        """Toggle between maximized and normal window state."""
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def mousePressEvent(self, event):
+        """Handle mouse press events for custom title bar dragging."""
+        if hasattr(self, 'title_bar') and event.button() == Qt.LeftButton:
+            # Check if click is within title bar
+            if self.title_bar.geometry().contains(event.pos()):
+                self.dragging = True
+                self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+                event.accept()
+            else:
+                super().mousePressEvent(event)
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Handle mouse move events for custom title bar dragging."""
+        if hasattr(self, 'dragging') and self.dragging and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPos() - self.drag_position)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """Handle mouse release events for custom title bar dragging."""
+        if hasattr(self, 'dragging') and event.button() == Qt.LeftButton:
+            self.dragging = False
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def apply_rounded_style(self):
+        """
+        Apply rounded corners style and custom colors to the application's UI elements.
+        To be added to the SpotifyLauncher class.
+        """
+        # Pale yellow for app background
+        app_background_color = "#FFFFD0"  # Pale yellow
+        button_background_color = "#B3D9FF"  # Light blue
+        button_hover_color = "#99CCFF"  # Slightly darker blue for hover
+        button_pressed_color = "#80BFFF"  # Even darker blue when pressed
+        
+        # Set main window background color
+        self.central_widget.setStyleSheet(f"background-color: {app_background_color};")
+        
+        # Style for rounded buttons with light blue background
+        button_style = f"""
+            QPushButton {{
+                border-radius: 8px;
+                background-color: {button_background_color};
+                border: 1px solid #8CB3D9;
+                padding: 8px 16px;
+                color: #333333;
+                font-weight: bold;
+            }}
+            
+            QPushButton:hover {{
+                background-color: {button_hover_color};
+            }}
+            
+            QPushButton:pressed {{
+                background-color: {button_pressed_color};
+            }}
+            
+            QPushButton:disabled {{
+                background-color: #D9E6F2;
+                color: #999999;
+            }}
+        """
+        
+        # Style for text areas (QTextEdit)
+        textedit_style = """
+            QTextEdit {
+                border-radius: 8px;
+                border: 1px solid #D9D0A3;
+                padding: 5px;
+                background-color: #ffffff;
+            }
+        """
+        
+        # Apply styles to buttons
+        self.discovery_button.setStyleSheet(button_style)
+        self.spotify_button.setStyleSheet(button_style)
+        
+        # Apply styles to text areas
+        self.discovery_output.setStyleSheet(textedit_style)
+        self.spotify_output.setStyleSheet(textedit_style)
+        self.debug_output.setStyleSheet(textedit_style)
+        
+        # Style for the tab widget to match the rounded theme
+        tab_style = f"""
+            QTabWidget::pane {{
+                border-radius: 8px;
+                border: 1px solid #D9D0A3;
+            }}
+            
+            QTabBar::tab {{
+                border-radius: 4px 4px 0 0;
+                padding: 5px 10px;
+                margin-right: 2px;
+                background-color: #E6E6B8;
+            }}
+            
+            QTabBar::tab:selected {{
+                background-color: {app_background_color};
+            }}
+            
+            QTabBar::tab:hover:!selected {{
+                background-color: #D9D9AD;
+            }}
+        """
+        self.output_tabs.setStyleSheet(tab_style)
+        
+        # Style for labels
+        label_style = """
+            QLabel {
+                color: #333333;
+            }
+        """
+        self.spotify_phase1_label.setStyleSheet(label_style)
+        self.spotify_phase2_label.setStyleSheet(label_style)
+        self.discovery_status.setStyleSheet(label_style)
+        self.spotify_status1.setStyleSheet(label_style)
+        self.spotify_status2.setStyleSheet(label_style)
 
     def setup_menu(self):
         """Set up the menu bar with options."""
@@ -617,7 +875,8 @@ class SpotifyLauncher(QMainWindow):
         # The tab is always there, we just need to handle showing/hiding it
         if checked:
             if self.output_tabs.indexOf(self.debug_output) == -1:
-                self.output_tabs.addTab(self.debug_output, "Debug Log")
+                # Add a bug symbol 🐞 to the debug tab title
+                self.output_tabs.addTab(self.debug_output, "🐞 Debug Log")
         else:
             idx = self.output_tabs.indexOf(self.debug_output)
             if idx >= 0:
@@ -630,22 +889,36 @@ class SpotifyLauncher(QMainWindow):
         Args:
             checked (bool): Whether console output should be visible
         """
-        if checked:
-            self.output_tabs.setVisible(True)
-        else:
-            self.output_tabs.setVisible(False)
+        # Toggle visibility of console output
+        self.output_tabs.setVisible(checked)
         
-        # Ensure no text-based progress is shown for all progress bars
+        # Toggle visibility of text labels
         self.spotify_status1.setVisible(checked)
         self.spotify_status2.setVisible(checked)
         self.discovery_status.setVisible(checked)
-        
-        # Also toggle visibility of phase labels
         self.spotify_phase1_label.setVisible(checked)
         self.spotify_phase2_label.setVisible(checked)
         
-        # Adjust window size to accommodate changes
-        self.adjustSize()
+        # The central widget layout and upper widget layout
+        main_layout = self.central_widget.layout()
+        
+        # Only adjust spacing if layouts exist
+        if main_layout:
+            if not checked:
+                # When hiding console, set compact layout
+                main_layout.setSpacing(5)
+                # Set fixed height for window in compact mode
+                self.setFixedHeight(350)  # Compact height based on screenshots
+            else:
+                # When showing console, restore original spacing
+                main_layout.setSpacing(15)
+                # Remove fixed height constraint
+                self.setFixedHeight(QWIDGETSIZE_MAX)  # Remove height constraint
+                # Restore to a reasonable size when showing console
+                self.resize(self.width(), 700)
+        
+        # Force layout update
+        QApplication.processEvents()
         
     def show_about(self):
         """Show information about the application."""
