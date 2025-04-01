@@ -22,7 +22,7 @@ The Deezer App doesn't support API usage currently for developers so this has to
 
 ### Installation
 
-- Requires Windows for the selecting of directories and files in file explorer for FLAC music directory selection and json file selection after 1st step.  Comment this code and adjust to your needs if on linux/mac
+- Requires Windows for the selecting of directories and files in file explorer for FLAC music directory selection and json file selection after 1st step.
 - Install Python 3 of some variety
 - Install git
 - Launch a terminal or powershell
@@ -44,3 +44,9 @@ The Deezer App doesn't support API usage currently for developers so this has to
 - Hit the step 2 button, choose your recommendations.json (located in the music directory) and wait; watch the progress bar.
 
 Note: Step 1 takes the longest time; step 2 also takes a little time but not so long.
+
+## Notes for linux/mac users...
+
+- There is no UI for linux/mac users.  Comment this code and adjust to your needs if on linux/mac - specifically the windows file explorer launch windows to select a directory in the first step or a json file in the second step.
+- You will need to run the python script musicdiscovery.py first.
+- You will need to run the python script spotifyclient.py second.
