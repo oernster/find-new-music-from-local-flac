@@ -1,5 +1,5 @@
-# Playlist Generator v2.5
-- UI overhauled and made dark theme, correctly functioning colour changing progress bars, and correctly generating top tracks in playlists in _relevant_ playlist genres.  Also, 3 times faster while respecting rate limiting constraints for 3rd party APIs.
+# GenreGenius v3.0
+- UI overhauled and added dark theme, correctly functioning colour changing progress bars, and correctly generating top tracks in playlists in _relevant_ playlist genres.  Also, 3 times faster while respecting rate limiting constraints for 3rd party APIs.
 
 # Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
 
