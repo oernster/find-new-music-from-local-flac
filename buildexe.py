@@ -10,10 +10,10 @@ def create_manifest_file():
   <assemblyIdentity
     version="1.0.0.0"
     processorArchitecture="X86"
-    name="PlaylistGenerator"
+    name="GenreGenius"
     type="win32"
   />
-  <description>Playlist Generator</description>
+  <description>GenreGenius</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
@@ -42,17 +42,23 @@ def create_manifest_file():
     return manifest_path
 
 def clear_builds():
-    """Clear previous builds and cache."""
+    """Clear previous builds, cache, and spec files."""
     if os.path.exists('build'):
         shutil.rmtree('build')
     if os.path.exists('dist'):
         shutil.rmtree('dist')
     if os.path.exists('__pycache__'):
         shutil.rmtree('__pycache__')
+    
+    # Also remove any existing spec files to prevent them from being reused
+    for spec_file in ['PlaylistGenerator.spec', 'GenreGenius.spec']:
+        if os.path.exists(spec_file):
+            os.remove(spec_file)
+            print(f"Removed existing spec file: {spec_file}")
 
 def main():
     """Simple script to build the executable directly with PyInstaller"""
-    print("Building Playlist Generator")
+    print("Building GenreGenius")
     
     clear_builds()  # Clearing previous builds and cache
 
@@ -61,7 +67,7 @@ def main():
         print("Error: spotifylauncher.py not found in current directory.")
         return
 
-    icon_path = "playlistgenerator.ico"
+    icon_path = "genregenius.ico"
     if not os.path.exists(icon_path):
         print(f"Error: {icon_path} not found. This icon is required for the application.")
         return
@@ -71,20 +77,67 @@ def main():
     # Create manifest file
     manifest_path = create_manifest_file()
     
-    # Build PyInstaller command - using a simplified approach
+    # Build PyInstaller command with explicit spec file creation
+    # First, generate a custom spec file with the correct name
+    spec_content = f"""# -*- mode: python ; coding: utf-8 -*-
+
+block_cipher = None
+
+a = Analysis(
+    ['spotifylauncher.py'],
+    pathex=[],
+    binaries=[],
+    datas=[("{icon_path}", ".")],
+    hiddenimports=['PyQt5.sip', 'PyQt5.QtSvg'],
+    hookspath=[],
+    hooksconfig={{}},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name='GenreGenius',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon="{icon_path}",
+    manifest="{manifest_path}",
+)
+"""
+    
+    # Write the spec file
+    spec_path = "GenreGenius.spec"
+    with open(spec_path, 'w') as f:
+        f.write(spec_content)
+    
+    print(f"Created custom spec file: {spec_path}")
+    
+    # Now build using this spec file
     cmd = [
         "pyinstaller",
         "--noconfirm",
-        "--name=PlaylistGenerator",
-        "--onefile",
-        "--windowed",
-        "--hidden-import=PyQt5.sip",
-        "--hidden-import=PyQt5.QtSvg",
-        f"--add-data={icon_path};.",  # For non-Windows use colon instead of semicolon
-        f"--icon={icon_path}",
-        "--manifest", manifest_path,
-        "--version-file=version.txt" if os.path.exists("version.txt") else "",
-        "spotifylauncher.py"
+        "--clean",  # Force a clean build
+        spec_path
     ]
     
     # Remove empty options
@@ -102,6 +155,16 @@ def main():
         # Copy icon to the dist folder for extra insurance
         print("Copying icon file to dist folder...")
         shutil.copy(icon_path, os.path.join("dist", icon_path))
+        
+        # Verify the correct executable name was created
+        expected_exe = os.path.join("dist", "GenreGenius.exe")
+        wrong_exe = os.path.join("dist", "PlaylistGenerator.exe")
+        
+        if os.path.exists(wrong_exe) and not os.path.exists(expected_exe):
+            print(f"Warning: Executable was created with incorrect name.")
+            print(f"Renaming {wrong_exe} to {expected_exe}")
+            # Rename the executable if it was created with the wrong name
+            os.rename(wrong_exe, expected_exe)
         
         # Additional info for Windows users
         if os.name == 'nt':
