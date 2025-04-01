@@ -207,13 +207,13 @@ class MusicRecommendationService:
         return False
 
     def get_recommendations(self, source_artists: List[Tuple[str, int]], 
-                      limit: int = 5) -> Dict[str, List[str]]:
+                      limit: int = 10) -> Dict[str, List[str]]:
         """
         Generate music recommendations based on artist genres.
         
         Args:
             source_artists (List[Tuple[str, int]]): List of (artist_name, count) tuples
-            limit (int): Maximum number of recommendations per artist (default 5)
+            limit (int): Maximum number of recommendations per artist (default 10)
         
         Returns:
             Dict[str, List[str]]: Dictionary of recommendations

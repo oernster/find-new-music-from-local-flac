@@ -1306,7 +1306,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    Playlist Generator v2.5
+    Playlist Generator v2.6
     By Oliver Ernster
 
     A tool for discovering music and generating
