@@ -35,10 +35,10 @@ The Deezer App doesn't support API usage currently for developers so this has to
 ## How to create the exe
 
 - ```python buildexe.py``` - This will create an executable file runnable on Windows in a subdirectory called dist.
-- Run the `PlaylistGenerator.exe` created program.
 
 ## Running
 
+- Run the `PlaylistGenerator.exe` created program.
 - Choose view | Show Console Output if you want to see that before you start.
 - Hit the Step 1 button, choose your music directory and wait; watch the progress bar.
 - Hit the step 2 button, choose your recommendations.json (located in the music directory) and wait; watch the progress bar.
