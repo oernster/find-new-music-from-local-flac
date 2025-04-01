@@ -581,7 +581,7 @@ class SpotifyLauncher(QMainWindow):
         self.phase2_active = False
         
         # Configure window
-        self.setWindowTitle("Playlist Generator")
+        self.setWindowTitle("Genre Genius")
         self.setMinimumSize(700, 700)  # Larger window to accommodate console output
         
         # Set up central widget
@@ -599,7 +599,7 @@ class SpotifyLauncher(QMainWindow):
         upper_layout.setContentsMargins(0, 0, 0, 0)
         
         # Title label with musical notes
-        title = QLabel("♫  Playlist Generator ♫")
+        title = QLabel("♫  GenreGenius ♫")
         title.setAlignment(Qt.AlignCenter)
         title.setFont(QFont("Arial", 16, QFont.Bold))
         upper_layout.addWidget(title)
@@ -1306,7 +1306,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    Playlist Generator v2.6
+    GenreGenius v3.0
     By Oliver Ernster
 
     A tool for discovering music and generating
