@@ -48,5 +48,5 @@ Note: Step 1 takes the longest time; step 2 also takes a little time but not so 
 ## Notes for linux/mac users...
 
 - There is no UI for linux/mac users.  Comment this code and adjust to your needs if on linux/mac - specifically the windows file explorer launch windows to select a directory in the first step or a json file in the second step.
-- You will need to run the python script musicdiscovery.py first.
-- You will need to run the python script spotifyclient.py second.
+- You will need to run ```python musicdiscovery.py``` first.
+- You will need to run the ```python spotifyclient.py``` second.
