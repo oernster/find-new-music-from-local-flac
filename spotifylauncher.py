@@ -1049,7 +1049,7 @@ class SpotifyLauncher(QMainWindow):
         
         # Find the title label in your UI
         for child in self.findChildren(QLabel):
-            if "♫  Playlist Generator ♫" in child.text():
+            if "♫  GenreGenius ♫" in child.text():
                 child.setStyleSheet(title_style)
                 break
         
@@ -1306,7 +1306,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius v3.0
+    GenreGenius v3.1
     By Oliver Ernster
 
     A tool for discovering music and generating
@@ -1324,11 +1324,7 @@ class SpotifyLauncher(QMainWindow):
         # Try to set the icon
         try:
             # Try ICO first
-            icon_path = os.path.join(self.get_base_dir(), "playlistgenerator.ico")
-            
-            # Fall back to SVG if ICO not found
-            if not os.path.exists(icon_path):
-                icon_path = os.path.join(self.get_base_dir(), "playlistgenerator.svg")
+            icon_path = os.path.join(self.get_base_dir(), "genregenius.ico")
             
             if os.path.exists(icon_path):
                 # Create QIcon from the icon file
@@ -1380,11 +1376,7 @@ class SpotifyLauncher(QMainWindow):
         """Load and set the application icon."""
         try:
             # Try to find the ICO file first
-            icon_path = os.path.join(self.get_base_dir(), "playlistgenerator.ico")
-            
-            # If ICO not found, fall back to SVG
-            if not os.path.exists(icon_path):
-                icon_path = os.path.join(self.get_base_dir(), "playlistgenerator.svg")
+            icon_path = os.path.join(self.get_base_dir(), "genregenius.ico")
             
             if os.path.exists(icon_path):
                 self.log_status(f"Loading icon from: {icon_path}")
@@ -1970,12 +1962,12 @@ def main():
         base_dir = os.path.dirname(os.path.abspath(__file__))
     
     # Look for icon in standard locations
-    icon_path = os.path.join(base_dir, "playlistgenerator.ico")
+    icon_path = os.path.join(base_dir, "genregenius.ico")
     if not os.path.exists(icon_path):
         # Try alternative locations
         alternative_paths = [
-            os.path.join(base_dir, "icons", "playlistgenerator.ico"),
-            os.path.join(base_dir, "_internal", "playlistgenerator.ico"),
+            os.path.join(base_dir, "icons", "genregenius.ico"),
+            os.path.join(base_dir, "_internal", "genregenius.ico"),
         ]
         
         for path in alternative_paths:
