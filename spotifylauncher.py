@@ -162,41 +162,44 @@ class ColourProgressBar(QProgressBar):
         
     def updateStyleSheet(self, value):
         """
-        Update the progress bar stylesheet based on progress percentage.
+        Update the progress bar stylesheet based on progress percentage with dark theme colors.
         
         Args:
             value (int): Progress value (0-100)
         """
-        # Define color ranges with exact boundaries
+        progress_bg = "#282828"        # Dark background
+        border_color = "#333333"       # Border color
+        
+        # Define color ranges with exact boundaries for dark theme
         if value < 1:
             # Empty/starting state
-            color = "#e0e0e0"  # Light gray
+            color = "#3D3D3D"          # Dark gray
         elif value < 20:
-            # Early progress - red
-            color = "#ff5a5a"
+            # Early progress - darker red in dark theme
+            color = "#8B2E2E"
         elif value < 40:
-            # Quarter progress - orange
-            color = "#ff9933"
+            # Quarter progress - darker orange in dark theme
+            color = "#B35900"
         elif value < 60:
-            # Half progress - yellow
-            color = "#ffcc33" 
+            # Half progress - darker yellow in dark theme
+            color = "#B39800"
         elif value < 80:
-            # Three-quarters progress - light green
-            color = "#99cc33"
+            # Three-quarters progress - darker green in dark theme
+            color = "#639900"
         else:
-            # Near completion - green
-            color = "#66cc33"
+            # Near completion - Spotify green
+            color = "#1DB954"
             
-        # Apply the stylesheet with the selected color
+        # Apply the stylesheet with the selected color for dark theme
         self.setStyleSheet(f"""
             QProgressBar {{
-                border: 1px solid grey;
+                border: 1px solid {border_color};
                 border-radius: 5px;
                 text-align: center;
                 font-weight: bold;
-                color: black;
+                color: white;
                 height: 25px;
-                background-color: #f0f0f0;
+                background-color: {progress_bg};
             }}
 
             QProgressBar::chunk {{
@@ -578,7 +581,7 @@ class SpotifyLauncher(QMainWindow):
         self.phase2_active = False
         
         # Configure window
-        self.setWindowTitle("♫  Playlist Generator ♫")
+        self.setWindowTitle("Playlist Generator")
         self.setMinimumSize(700, 700)  # Larger window to accommodate console output
         
         # Set up central widget
@@ -733,15 +736,22 @@ class SpotifyLauncher(QMainWindow):
         # Hide debug tab by default
         self.toggle_debug_tab(False)
         
-        # Apply rounded corners style
-        self.apply_rounded_style()
-        self.set_mauve_titlebar()
-        
+        # Apply dark theme instead of the previous styling methods
+        self.apply_dark_theme()
+                
         # Set up tab changed tracking
         self.output_tabs.currentChanged.connect(self.tab_changed)
+                
+        # Set app and window title to dark
+        palette = self.palette()
+        dark_bg = QColor("#121212")
+        palette.setColor(QPalette.Window, dark_bg)
+        palette.setColor(QPalette.WindowText, QColor("#E0E0E0"))
+        self.setPalette(palette)
         
-        # Apply pale yellow Windows title bar
-        self.apply_pale_yellow_titlebar()
+        self.toggle_console_action.setChecked(False)  # Default to hidden logs
+        self.toggle_console_output(False)             # Apply the hidden state
+        self.apply_dark_theme_to_titlebar()
 
     def event(self, event):
         """
@@ -778,120 +788,56 @@ class SpotifyLauncher(QMainWindow):
         except Exception as e:
             print(f"Error in tab_changed: {str(e)}")
 
-    def apply_pale_yellow_titlebar(self):
-        """Apply pale yellow background to Windows title bar."""
-        try:
-            # Define Windows API constants
-            DWMWA_CAPTION_COLOR = 35  # DWM caption color attribute
-            
-            # Pale yellow color (#FFFFD0) in COLORREF format
-            pale_yellow_color = 0x00D0FFFF
-            
-            # Apply the color to the title bar
-            windll.dwmapi.DwmSetWindowAttribute(
-                int(self.winId()),
-                DWMWA_CAPTION_COLOR,
-                byref(c_int(pale_yellow_color)),
-                sizeof(c_int)
-            )
-            
-            self.log_status("Applied pale yellow background to Windows title bar")
-        except Exception as e:
-            self.log_status(f"Error setting Windows title bar color: {str(e)}")
-            # Fallback method
-            try:
-                self.setStyleSheet(self.styleSheet() + """
-                    QMainWindow::title {
-                        background-color: #FFFFD0;
-                    }
-                """)
-                self.log_status("Applied fallback pale yellow title styling")
-            except Exception as e:
-                self.log_status(f"Error in fallback title styling: {str(e)}")
-
-    def apply_yellow_windows_titlebar(self):
-        """Apply a yellow background to the Windows system title bar."""
-        try:
-            # Define Windows API constants
-            DWMWA_CAPTION_COLOR = 35  # DWM caption color attribute
-            
-            # Light yellow color (#FFFF99) in COLORREF format
-            yellow_color = 0x0099FFFF
-            
-            # Apply the color to the title bar
-            windll.dwmapi.DwmSetWindowAttribute(
-                int(self.winId()),
-                DWMWA_CAPTION_COLOR,
-                byref(c_int(yellow_color)),
-                sizeof(c_int)
-            )
-            
-            self.log_status("Applied yellow background to Windows title bar")
-        except Exception as e:
-            self.log_status(f"Error setting Windows title bar color: {str(e)}")
-            # Fallback method
-            try:
-                self.setStyleSheet(self.styleSheet() + """
-                    QMainWindow::title {
-                        background-color: #FFFF99;
-                    }
-                """)
-                self.log_status("Applied fallback yellow title styling")
-            except Exception as e:
-                self.log_status(f"Error in fallback title styling: {str(e)}")
-
-    def set_mauve_titlebar(self):
-        """Set a mauve background for the title bar while preserving the menu bar."""
-        # Use palette to set the title bar color
-        palette = self.palette()
-        mauve_color = QColor("#E0B0FF")  # Mauve color
-        palette.setColor(QPalette.Window, mauve_color)
-        palette.setColor(QPalette.WindowText, QColor("#333333"))
-        self.setPalette(palette)
-        
-        # Make the menubar match the mauve color
-        menubar = self.menuBar()
-        menubar.setStyleSheet("""
-            QMenuBar {
-                background-color: #E0B0FF;
-                color: #333333;
-            }
-            QMenuBar::item {
-                background-color: #E0B0FF;
-                color: #333333;
-            }
-            QMenuBar::item:selected {
-                background-color: #D0A0EF;
-            }
-            QMenu {
-                background-color: #F5E8FF;
-                color: #333333;
-                border: 1px solid #D0A0EF;
-            }
-            QMenu::item:selected {
-                background-color: #E0B0FF;
-            }
-        """)
-        
-        # Style the application window
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #FFFFD0;
-            }
-            QMainWindow::title {
-                background-color: #E0B0FF;
-            }
-            QStatusBar {
-                background-color: #E0B0FF;
-            }
-        """)
-
     def toggle_maximize(self):
         """Toggle between maximized and normal window state."""
         if self.isMaximized():
             self.showNormal()
         else:
             self.showMaximized()
+
+    def apply_dark_theme_to_titlebar(self):
+        """Apply dark theme to the window title bar with light text."""
+        try:
+            # Define Windows API constants
+            DWMWA_CAPTION_COLOR = 35  # DWM caption color attribute
+            DWMWA_TEXT_COLOR = 36     # DWM caption text color attribute
+            
+            # Dark title bar color (#121212) in COLORREF format
+            dark_title_color = 0x00121212
+            
+            # Light text color (white #FFFFFF) in COLORREF format
+            light_text_color = 0x00FFFFFF
+            
+            # Apply the dark color to the title bar
+            windll.dwmapi.DwmSetWindowAttribute(
+                int(self.winId()),
+                DWMWA_CAPTION_COLOR,
+                byref(c_int(dark_title_color)),
+                sizeof(c_int)
+            )
+            
+            # Apply the light text color to the title bar
+            windll.dwmapi.DwmSetWindowAttribute(
+                int(self.winId()),
+                DWMWA_TEXT_COLOR,
+                byref(c_int(light_text_color)),
+                sizeof(c_int)
+            )
+            
+            self.log_status("Applied dark theme to Windows title bar")
+        except Exception as e:
+            self.log_status(f"Error setting Windows title bar color: {str(e)}")
+            # Fallback method
+            try:
+                self.setStyleSheet(self.styleSheet() + """
+                    QMainWindow::title {
+                        background-color: #121212;
+                        color: white;
+                    }
+                """)
+                self.log_status("Applied fallback dark title styling")
+            except Exception as e:
+                self.log_status(f"Error in fallback title styling: {str(e)}")
 
     def apply_rounded_style(self):
         """Apply rounded corners style and custom colors to the application's UI elements."""
@@ -983,6 +929,219 @@ class SpotifyLauncher(QMainWindow):
         self.discovery_status.setStyleSheet(label_style)
         self.spotify_status1.setStyleSheet(label_style)
         self.spotify_status2.setStyleSheet(label_style)
+
+    def apply_dark_theme(self):
+        """Apply a dark theme with modern colors to the application."""
+        # Dark theme color palette
+        dark_bg = "#121212"              # Main dark background
+        darker_bg = "#0A0A0A"            # Darker accent background
+        dark_accent = "#1F1F1F"          # Slightly lighter accent
+        text_color = "#E0E0E0"           # Light text color
+        muted_text = "#AAAAAA"           # Muted text for less important elements
+        spotify_green = "#1DB954"        # Spotify green for highlights
+        spotify_green_hover = "#1ED760"  # Lighter green for hover states
+        spotify_green_pressed = "#169C46" # Darker green for pressed states
+        border_color = "#333333"         # Border color for elements
+        
+        # Progress bar colors
+        progress_bg = "#282828"          # Progress bar background
+        
+        # Tab colors
+        tab_bg = "#282828"               # Tab background
+        tab_selected = "#1F1F1F"         # Selected tab
+        tab_hover = "#333333"            # Hovered tab
+        
+        # Set main window background color
+        self.central_widget.setStyleSheet(f"background-color: {dark_bg};")
+        
+        # Style for rounded buttons with Spotify green
+        button_style = f"""
+            QPushButton {{
+                border-radius: 8px;
+                background-color: {spotify_green};
+                border: none;
+                padding: 8px 16px;
+                color: white;
+                font-weight: bold;
+            }}
+            
+            QPushButton:hover {{
+                background-color: {spotify_green_hover};
+            }}
+            
+            QPushButton:pressed {{
+                background-color: {spotify_green_pressed};
+            }}
+            
+            QPushButton:disabled {{
+                background-color: #444444;
+                color: #777777;
+            }}
+        """
+        
+        # Style for text areas (QTextEdit)
+        textedit_style = f"""
+            QTextEdit {{
+                border-radius: 4px;
+                border: 1px solid {border_color};
+                padding: 5px;
+                background-color: {dark_accent};
+                color: {text_color};
+            }}
+        """
+        
+        # Apply styles to buttons
+        self.discovery_button.setStyleSheet(button_style)
+        self.spotify_button.setStyleSheet(button_style)
+        
+        # Apply styles to text areas
+        self.discovery_output.setStyleSheet(textedit_style)
+        self.spotify_output.setStyleSheet(textedit_style)
+        self.debug_output.setStyleSheet(textedit_style)
+        
+        # Style for the tab widget to match the dark theme
+        tab_style = f"""
+            QTabWidget::pane {{
+                border-radius: 4px;
+                border: 1px solid {border_color};
+                background-color: {dark_accent};
+            }}
+            
+            QTabBar::tab {{
+                border-radius: 4px 4px 0 0;
+                padding: 5px 10px;
+                margin-right: 2px;
+                background-color: {tab_bg};
+                color: {muted_text};
+            }}
+            
+            QTabBar::tab:selected {{
+                background-color: {tab_selected};
+                color: {text_color};
+            }}
+            
+            QTabBar::tab:hover:!selected {{
+                background-color: {tab_hover};
+            }}
+        """
+        self.output_tabs.setStyleSheet(tab_style)
+        
+        # Style for labels
+        label_style = f"""
+            QLabel {{
+                color: {text_color};
+            }}
+        """
+        self.spotify_phase1_label.setStyleSheet(label_style)
+        self.spotify_phase2_label.setStyleSheet(label_style)
+        self.discovery_status.setStyleSheet(label_style)
+        self.spotify_status1.setStyleSheet(label_style)
+        self.spotify_status2.setStyleSheet(label_style)
+        
+        # Make the title label bright and prominent
+        title_style = f"""
+            QLabel {{
+                color: {spotify_green};
+                font-weight: bold;
+                font-size: 18px;
+            }}
+        """
+        
+        # Find the title label in your UI
+        for child in self.findChildren(QLabel):
+            if "♫  Playlist Generator ♫" in child.text():
+                child.setStyleSheet(title_style)
+                break
+        
+        # Update menu bar to dark theme
+        menubar_style = f"""
+            QMenuBar {{
+                background-color: {dark_bg};
+                color: {text_color};
+            }}
+            QMenuBar::item {{
+                background-color: {dark_bg};
+                color: {text_color};
+            }}
+            QMenuBar::item:selected {{
+                background-color: {dark_accent};
+            }}
+            QMenu {{
+                background-color: {dark_bg};
+                color: {text_color};
+                border: 1px solid {border_color};
+            }}
+            QMenu::item:selected {{
+                background-color: {dark_accent};
+            }}
+        """
+        self.menuBar().setStyleSheet(menubar_style)
+        
+        # Set window background and title bar color
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {dark_bg};
+            }}
+            QStatusBar {{
+                background-color: {dark_bg};
+                color: {text_color};
+            }}
+        """)
+
+        # Overwrite the custom color progress bar style with dark theme
+        self.discovery_progress.setStyleSheet(f"""
+            QProgressBar {{
+                border: 1px solid {border_color};
+                border-radius: 5px;
+                text-align: center;
+                font-weight: bold;
+                color: white;
+                height: 25px;
+                background-color: {progress_bg};
+            }}
+
+            QProgressBar::chunk {{
+                background-color: {spotify_green};
+                width: 10px;
+                margin: 0.5px;
+            }}
+        """)
+        
+        self.spotify_progress1.setStyleSheet(f"""
+            QProgressBar {{
+                border: 1px solid {border_color};
+                border-radius: 5px;
+                text-align: center;
+                font-weight: bold;
+                color: white;
+                height: 25px;
+                background-color: {progress_bg};
+            }}
+
+            QProgressBar::chunk {{
+                background-color: {spotify_green};
+                width: 10px;
+                margin: 0.5px;
+            }}
+        """)
+        
+        self.spotify_progress2.setStyleSheet(f"""
+            QProgressBar {{
+                border: 1px solid {border_color};
+                border-radius: 5px;
+                text-align: center;
+                font-weight: bold;
+                color: white;
+                height: 25px;
+                background-color: {progress_bg};
+            }}
+
+            QProgressBar::chunk {{
+                background-color: {spotify_green};
+                width: 10px;
+                margin: 0.5px;
+            }}
+        """)
 
     def setup_menu(self):
         """Set up the menu bar with options."""
@@ -1145,13 +1304,13 @@ class SpotifyLauncher(QMainWindow):
         QApplication.processEvents()
         
     def show_about(self):
-        """Show information about the application."""
+        """Show information about the application with dark theme styling."""
         about_text = """
-    Playlist Generator v2.4
+    Playlist Generator v2.5
     By Oliver Ernster
 
     A tool for discovering music and generating
-    numbered Spotify playlists by genre.
+    Spotify playlists by genre.
 
     Licensed under GPL-3.0
     Copyright © 2025 Oliver Ernster
@@ -1183,6 +1342,37 @@ class SpotifyLauncher(QMainWindow):
                 about_dialog.setIconPixmap(pixmap)
         except Exception as e:
             self.log_status(f"Error setting about dialog icon: {str(e)}")
+        
+        # Apply dark theme styling to the dialog
+        dark_bg = "#121212"           # Dark background
+        text_color = "#E0E0E0"        # Light text
+        spotify_green = "#1DB954"     # Spotify green
+        
+        # Style the about dialog
+        about_dialog.setStyleSheet(f"""
+            QMessageBox {{
+                background-color: {dark_bg};
+                color: {text_color};
+            }}
+            QLabel {{
+                color: {text_color};
+                font-size: 12px;
+            }}
+            QPushButton {{
+                background-color: {spotify_green};
+                color: white;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-weight: bold;
+                border: none;
+            }}
+            QPushButton:hover {{
+                background-color: #1ED760;
+            }}
+            QPushButton:pressed {{
+                background-color: #169C46;
+            }}
+        """)
         
         about_dialog.exec_()
 
@@ -1438,20 +1628,29 @@ class SpotifyLauncher(QMainWindow):
             self.discovery_status.setText("Error starting process")
 
     def update_discovery_progress(self, value: int, status: str):
-        """
-        Update discovery progress bar and status with visual feedback.
-        
-        Args:
-            value (int): Progress value (0-100)
-            status (str): Status message
-        """
         try:
-            # Direct update in the same thread for the progress bar
-            self.discovery_progress.setValue(value)
+            # Look for artist progress percentage ONLY
+            progress_match = re.search(r'Progress: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
+            if progress_match:
+                percentage = float(progress_match.group(1))
+                current = int(progress_match.group(2))
+                total = int(progress_match.group(3))
+                
+                # Direct update in the same thread for the progress bar
+                self.discovery_progress.setValue(int(percentage))
+                
+                # Update status label with artists processed
+                filtered_status = f"Processing: {current} of {total} artists"
+                self.discovery_status.setText(filtered_status)
+                
+                # Log to discovery output
+                self.log_discovery_output(filtered_status)
+                
+                return
             
-            # Filter out unusual characters and problematic status messages
-            if status:
-                # Skip certain status messages entirely
+            # Fallback for other meaningful status messages
+            if status and len(status) > 3:
+                # Filter out certain uninteresting messages
                 skip_messages = [
                     "Executing:", 
                     "Working directory:", 
@@ -1459,24 +1658,18 @@ class SpotifyLauncher(QMainWindow):
                     "Progress: |"  # Console progress bar
                 ]
                 
-                if any(msg in status for msg in skip_messages):
-                    return
-                
-                # Filter out control characters and non-printable characters
-                filtered_status = ''.join(c for c in status if c.isprintable() and ord(c) < 127)
-                
-                # Only update if we have a meaningful filtered status
-                if filtered_status and len(filtered_status) > 3:
-                    # Direct update for the status text
-                    truncated_status = self.truncate_status(filtered_status)
-                    self.discovery_status.setText(truncated_status)
+                if not any(msg in status for msg in skip_messages):
+                    # Filter out control characters and non-printable characters
+                    filtered_status = ''.join(c for c in status if c.isprintable() and ord(c) < 127)
                     
-                    # Also log it to the output
-                    self.log_discovery_output(f"Progress: {value}% - {truncated_status}")
+                    if filtered_status and len(filtered_status) > 3:
+                        truncated_status = self.truncate_status(filtered_status)
+                        self.discovery_status.setText(truncated_status)
+                        self.log_discovery_output(truncated_status)
+        
         except Exception as e:
             # Log the error but don't crash
             print(f"Error in update_discovery_progress: {str(e)}")
-            self.log_status(f"Error updating progress: {str(e)}")
 
     def discovery_finished(self, success: bool):
         """
@@ -1610,32 +1803,12 @@ class SpotifyLauncher(QMainWindow):
             # Phase transition detection
             if "starting playlist generation" in status.lower():
                 # Complete Phase 1
-                QMetaObject.invokeMethod(
-                    self.spotify_progress1, 
-                    "setValue", 
-                    Qt.QueuedConnection,
-                    QArgument("int", 100)
-                )
-                QMetaObject.invokeMethod(
-                    self.spotify_status1, 
-                    "setText", 
-                    Qt.QueuedConnection,
-                    QArgument("QString", "Artist Classification Complete")
-                )
+                self.spotify_progress1.setValue(100)
+                self.spotify_status1.setText("Artist Classification Complete")
                 # Initialize Phase 2
                 self.phase2_active = True
-                QMetaObject.invokeMethod(
-                    self.spotify_progress2, 
-                    "setValue", 
-                    Qt.QueuedConnection,
-                    QArgument("int", 0)
-                )
-                QMetaObject.invokeMethod(
-                    self.spotify_status2, 
-                    "setText", 
-                    Qt.QueuedConnection,
-                    QArgument("QString", "Starting Playlist Generation")
-                )
+                self.spotify_progress2.setValue(0)
+                self.spotify_status2.setText("Starting Playlist Generation")
                 return
                 
             # Look for specific progress updates in the format "Progress: X.X% (Y/Z artists)"
@@ -1648,32 +1821,12 @@ class SpotifyLauncher(QMainWindow):
                 # If we're in Phase 2 (after "Artist Classification Complete")
                 if self.phase2_active:
                     # Update the Phase 2 progress bar
-                    QMetaObject.invokeMethod(
-                        self.spotify_progress2, 
-                        "setValue", 
-                        Qt.QueuedConnection,
-                        QArgument("int", int(percentage))
-                    )
-                    QMetaObject.invokeMethod(
-                        self.spotify_status2, 
-                        "setText", 
-                        Qt.QueuedConnection,
-                        QArgument("QString", f"Processing: {current} of {total} artists")
-                    )
+                    self.spotify_progress2.setValue(int(percentage))
+                    self.spotify_status2.setText(f"Processing: {current} of {total} artists")
                 else:
                     # Update the Phase 1 progress bar
-                    QMetaObject.invokeMethod(
-                        self.spotify_progress1, 
-                        "setValue", 
-                        Qt.QueuedConnection,
-                        QArgument("int", int(percentage))
-                    )
-                    QMetaObject.invokeMethod(
-                        self.spotify_status1, 
-                        "setText", 
-                        Qt.QueuedConnection,
-                        QArgument("QString", f"Processing artists: {current} of {total}")
-                    )
+                    self.spotify_progress1.setValue(int(percentage))
+                    self.spotify_status1.setText(f"Processing artists: {current} of {total}")
                 return
             
             # Handle "Organizing tracks for artist" messages in Phase 2
@@ -1682,36 +1835,15 @@ class SpotifyLauncher(QMainWindow):
                 artist_match = re.search(r'organizing tracks for artist: (.+)', status, re.IGNORECASE)
                 if artist_match:
                     artist_name = artist_match.group(1)
-                    QMetaObject.invokeMethod(
-                        self.spotify_status2, 
-                        "setText", 
-                        Qt.QueuedConnection,
-                        QArgument("QString", f"Processing artist: {artist_name}")
-                    )
+                    self.spotify_status2.setText(f"Processing artist: {artist_name}")
                 return
             
             # Regular status updates - only update text, not progress bar
             if self.phase2_active:
-                QMetaObject.invokeMethod(
-                    self.spotify_status2, 
-                    "setText", 
-                    Qt.QueuedConnection,
-                    QArgument("QString", self.truncate_status(status))
-                )
+                self.spotify_status2.setText(self.truncate_status(status))
             else:
-                # Only update Phase 1 if not yet in Phase 2
-                QMetaObject.invokeMethod(
-                    self.spotify_progress1, 
-                    "setValue", 
-                    Qt.QueuedConnection,
-                    QArgument("int", value)
-                )
-                QMetaObject.invokeMethod(
-                    self.spotify_status1, 
-                    "setText", 
-                    Qt.QueuedConnection,
-                    QArgument("QString", self.truncate_status(status))
-                )
+                # Only update status text for Phase 1 if not a progress percentage update
+                self.spotify_status1.setText(self.truncate_status(status))
         except Exception as e:
             # Log the error but don't crash
             print(f"Error in update_spotify_progress: {str(e)}")
