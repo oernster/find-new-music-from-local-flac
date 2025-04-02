@@ -4,6 +4,7 @@ Spotify Launcher - GUI Application for Music Discovery and Spotify Playlist Crea
 
 import sys
 import os
+import argparse
 import subprocess
 import webbrowser
 import time
@@ -26,6 +27,8 @@ from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, QObject, QMutex, QMutexLocker, pyqtSlot, QEvent, QRect,
     QPropertyAnimation, QEasingCurve, pyqtProperty, QSize, QPointF, QRectF
 )
+
+DEFAULT_EMAIL = "oliverjernster@hotmail.com"  # Use the same email as in musicdiscovery.py
 
 
 # Thread-safe logger class to handle log operations safely
@@ -1195,6 +1198,20 @@ class SpotifyLauncher(QMainWindow):
             }}
         """)
 
+    
+    def print_banner(self):
+        """Print a colorful banner in the log."""
+        banner = """
+    ╔═══════════════════════════════════════════════╗
+    ║  FLAC Music Discovery App - Find New Artists  ║
+    ╚═══════════════════════════════════════════════╝
+    """
+        # Log the banner to the discovery output
+        self.log_discovery_output(banner)
+        
+        # Also log to the status/debug output
+        self.log_status("Music Discovery process started")
+
     def is_configuration_valid(self):
         """Check if a valid configuration exists."""
         config_path = os.path.join(self.get_base_dir(), "config.json")
@@ -2186,7 +2203,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius v3.5.2
+    GenreGenius v3.6
     By Oliver Ernster
 
     A tool for discovering music and generating

@@ -511,12 +511,29 @@ def main():
 
     args = parser.parse_args()
     
-    # Hard-code music directory
-    music_dir = "H:\\test"
+    # Use the directory from command-line args, or open browser if not specified
+    music_dir = args.dir
+    if not music_dir:
+        print(f"{Fore.YELLOW}No directory specified, opening directory browser...{Style.RESET_ALL}")
+        music_dir = browse_directory()
+        if not music_dir:
+            print(f"{Fore.RED}No directory selected. Exiting.{Style.RESET_ALL}")
+            return
     
-    # Determine output file path
-    output_file = os.path.join(music_dir, 'recommendations.json')
-    print(f"{Fore.CYAN}Will save recommendations to music directory: {output_file}{Style.RESET_ALL}")
+    # Validate the directory exists
+    if not os.path.isdir(music_dir):
+        print(f"{Fore.RED}Error: Directory {music_dir} does not exist.{Style.RESET_ALL}")
+        return
+        
+    print(f"{Fore.GREEN}Using music directory: {music_dir}{Style.RESET_ALL}")
+    
+    # Determine output file path based on save-in-music-dir flag
+    if args.save_in_music_dir:
+        output_file = os.path.join(music_dir, 'recommendations.json')
+        print(f"{Fore.CYAN}Will save recommendations to music directory: {output_file}{Style.RESET_ALL}")
+    else:
+        output_file = args.output
+        print(f"{Fore.CYAN}Will save recommendations to: {output_file}{Style.RESET_ALL}")
     
     # Create components
     scanner = ProgressTrackingFlacScanner(music_dir)  # Use the enhanced scanner
