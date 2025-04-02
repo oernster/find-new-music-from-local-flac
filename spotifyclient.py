@@ -1786,11 +1786,11 @@ class SpotifyPlaylistManager:
                 
                 # Create a new playlist name with consistent format
                 if count:
-                    playlist_name = f"{genre} #{count+1}"
+                    playlist_name = f"{genre} #{count}"
                 elif is_sampler:
                     playlist_name = f"{genre} Sampler"
                 else:
-                    playlist_name = f"{genre} #{count+1}"
+                    playlist_name = f"{genre}"
                 
                 # Create custom description based on genre
                 description = f"A {genre} playlist created by GenreGenius based on your music collection."
