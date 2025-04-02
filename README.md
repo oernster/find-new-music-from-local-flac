@@ -1,5 +1,6 @@
-# GenreGenius v3.1 - needs further work; please be patient.
+# GenreGenius v3.3 - needs further work; please be patient.
 - UI overhauled and added dark theme, correctly functioning colour changing progress bars, and correctly generating top tracks in playlists in _relevant_ playlist genres.  Also, 3 times faster while respecting rate limiting constraints for 3rd party APIs.
+- Now with settings automation/dialog/menu.
 
 # Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
 
