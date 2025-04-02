@@ -13,7 +13,7 @@ import traceback
 import queue
 import re
 import json
-from typing import List, Optional
+from typing import List, Optional, Dict
 import ctypes
 from ctypes import windll, byref, sizeof, c_int
 
@@ -29,6 +29,13 @@ from PyQt5.QtCore import (
 )
 
 DEFAULT_EMAIL = "oliverjernster@hotmail.com"  # Use the same email as in musicdiscovery.py
+
+# Global dictionary to track last update times for different phases
+STATUS_UPDATE_THROTTLE: Dict[str, float] = {
+    'discovery': 0,
+    'spotify_phase1': 0,
+    'spotify_phase2': 0
+}
 
 
 # Thread-safe logger class to handle log operations safely
@@ -608,7 +615,7 @@ class ScriptWorker(QThread):
 
     def update_progress_from_line(self, line: str) -> bool:
         """
-        Extract progress information from log lines.
+        Extract progress information from log lines with improved status messaging.
         
         Args:
             line (str): Log line to process
@@ -623,6 +630,7 @@ class ScriptWorker(QThread):
                 total = int(total_artists_match.group(1))
                 self.total_artists = total
                 self.safe_emit_output(f"Initialized total artists to {total}")
+                self.update_progress.emit(0, f"Beginning to process {total} artists")
                 return True
             
             # Specifically look for progress lines with detailed format
@@ -634,26 +642,45 @@ class ScriptWorker(QThread):
                 
                 # Convert percentage to integer and emit progress update
                 int_percentage = int(percentage)
-                self.safe_emit_output(f"FOUND ARTIST PROGRESS: {current}/{total} artists - {percentage}%")
                 self.update_progress.emit(int_percentage, f"Processing: {current}/{total} artists")
                 self.current_value = int_percentage
                 return True
             
-            # Detect progress format from spotifyclient.py
+            # Detect scanning library
+            if "Scanning music library in" in line:
+                dir_match = re.search(r'Scanning music library in (.+?)\.\.\.', line)
+                if dir_match:
+                    music_dir = dir_match.group(1)
+                    self.update_progress.emit(2, f"Scanning library in {music_dir}")
+                    return True
+            
+            # Detect artist directory counting
+            if "Found" in line and "artist directories with" in line:
+                dirs_match = re.search(r'Found (\d+) artist directories with (\d+) potential album directories', line)
+                if dirs_match:
+                    artists = dirs_match.group(1)
+                    albums = dirs_match.group(2)
+                    self.update_progress.emit(5, f"Found {artists} artists with {albums} albums")
+                    return True
+            
+            # Detect processing a specific artist
+            artist_processing = re.search(r'=== PROCESSING: (.+?) ===', line)
+            if artist_processing:
+                artist_name = artist_processing.group(1)
+                # Truncate long artist names for display
+                if len(artist_name) > 30:
+                    artist_name = artist_name[:27] + "..."
+                self.update_progress.emit(-3, f"Processing artist: {artist_name}")
+                return True
+            
+            # Detect Spotify progress format
             spotify_progress_match = re.search(r'Progress: (\d+\.\d+)%', line)
             if spotify_progress_match and not progress_match:  # Make sure we didn't already match above
                 percentage = float(spotify_progress_match.group(1))
                 int_percentage = int(percentage)
-                self.update_progress.emit(int_percentage, line)
+                self.update_progress.emit(int_percentage, f"Processing: {int_percentage}% complete")
                 self.current_value = int_percentage
                 return True
-                
-            # Initialization and batch processing detection
-            if "Processing batch of" in line:
-                batch_match = re.search(r'Processing batch of (\d+) artists', line)
-                if batch_match:
-                    batch_size = int(batch_match.group(1))
-                    return True
             
             # Detect phase transition to playlist generation
             if any(marker in line.lower() for marker in [
@@ -666,10 +693,66 @@ class ScriptWorker(QThread):
                 self.update_progress.emit(-2, "Starting Playlist Generation")
                 return True
             
-            # Completed artist processing phase
-            if "Genre Lookup Summary:" in line or "Processed" in line and "All Genres" in line:
-                # Signal completion of Phase 1 without overriding existing progress
+            # Detect creating a specific playlist
+            playlist_match = re.search(r"Creating playlist '(.+?)' with (\d+) tracks", line)
+            if playlist_match:
+                playlist_name = playlist_match.group(1)
+                tracks = playlist_match.group(2)
+                self.update_progress.emit(-4, f"Creating playlist: {playlist_name} ({tracks} tracks)")
+                return True
+            
+            # Detect successful playlist creation
+            if "Playlist URL:" in line:
+                playlist_url_match = re.search(r"Playlist URL: (https://open\.spotify\.com/playlist/\w+)", line)
+                if playlist_url_match:
+                    self.update_progress.emit(-5, "Playlist created successfully")
+                    return True
+            
+            # Detect processing a specific genre
+            genre_match = re.search(r"Processing artists in genre: (.+)", line)
+            if genre_match:
+                genre = genre_match.group(1)
+                self.update_progress.emit(-6, f"Processing genre: {genre}")
+                return True
+            
+            # Detect organizing tracks for a specific artist
+            organize_match = re.search(r"Organizing tracks for artist: (.+)", line)
+            if organize_match:
+                artist = organize_match.group(1)
+                if len(artist) > 30:
+                    artist = artist[:27] + "..."
+                self.update_progress.emit(-7, f"Finding tracks for: {artist}")
+                return True
+            
+            # Detect artist genre classification
+            if "Genre Lookup Summary:" in line:
                 self.update_progress.emit(-1, "Artist Genre Classification Complete")
+                return True
+            
+            # Detect library artists summary
+            library_match = re.search(r"Found (\d+) unique artists in (\d+) valid FLAC files", line)
+            if library_match:
+                artists_count = library_match.group(1)
+                files_count = library_match.group(2)
+                self.update_progress.emit(95, f"Found {artists_count} artists in {files_count} files")
+                return True
+            
+            # Detect successful recommendations
+            if "Total source artists with recommendations:" in line:
+                rec_match = re.search(r"Total source artists with recommendations: (\d+)", line)
+                if rec_match:
+                    count = rec_match.group(1)
+                    self.update_progress.emit(97, f"Generated recommendations for {count} artists")
+                    return True
+            
+            # Detect saving recommendations
+            if "Saving recommendations" in line:
+                self.update_progress.emit(98, "Saving recommendations to file")
+                return True
+            
+            # Detect completion of music discovery
+            if "Music discovery complete" in line:
+                self.update_progress.emit(100, "Music Discovery completed successfully")
                 return True
             
             # Return false if no progress was detected
@@ -2203,7 +2286,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius v3.6
+    GenreGenius v3.6.1
     By Oliver Ernster
 
     A tool for discovering music and generating
@@ -2492,70 +2575,6 @@ class SpotifyLauncher(QMainWindow):
         # Run the actual process
         self.run_music_discovery()
 
-    def update_discovery_progress(self, value: int, status: str):
-        try:
-            # Log all progress updates for debugging
-            self.log_status(f"Progress update received: value={value}, status={status}")
-            
-            # IGNORE all directory-based progress
-            if "directories" in status:
-                self.log_status("Ignoring directory progress")
-                return
-                
-            # Check for artist pattern in the formatted status
-            if "Processing:" in status and "artists" in status:
-                # Extract numbers if possible
-                match = re.search(r'Processing: (\d+)/(\d+) artists', status)
-                if match:
-                    current = match.group(1)
-                    total = match.group(2)
-                    self.discovery_progress.setValue(value)
-                    self.discovery_status.setText(f"Processing artists: {current}/{total}")
-                    self.log_status(f"Updated progress bar to {value}% from artist progress")
-                    return
-                
-            # Direct artist progress detection from raw log line
-            artist_match = re.search(r'Progress: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
-            if artist_match:
-                percentage = float(artist_match.group(1))
-                current = int(artist_match.group(2))
-                total = int(artist_match.group(3))
-                
-                # Explicitly update progress bar
-                int_percentage = int(percentage)
-                self.discovery_progress.setValue(int_percentage)
-                
-                # Update status label
-                self.discovery_status.setText(f"Processing artists: {current}/{total}")
-                
-                # Log progress update
-                self.log_status(f"Updated progress bar to {int_percentage}% from raw artist progress")
-                return
-                
-            # Check for completion
-            if "Found unique artists" in status:
-                self.discovery_progress.setValue(100)
-                self.discovery_status.setText(self.truncate_status(status))
-                self.log_status("Set progress to 100% based on completion marker")
-                return
-                
-            # Otherwise use the value parameter
-            if isinstance(value, int) and value >= 0 and value <= 100:
-                self.discovery_progress.setValue(value)
-                self.log_status(f"Set progress to {value}% from value parameter")
-                
-                # Use meaningful status
-                if status and len(status) > 3:
-                    skip_messages = ["Executing:", "Working directory:", "\033", "Progress: |"]
-                    if not any(msg in status for msg in skip_messages):
-                        self.discovery_status.setText(self.truncate_status(status))
-        
-        except Exception as e:
-            # Log the error but don't crash
-            error_msg = f"Error in update_discovery_progress: {str(e)}\n{traceback.format_exc()}"
-            self.log_status(error_msg)
-            print(error_msg)
-
     def discovery_finished(self, success: bool):
         """
         Handle when music discovery is finished.
@@ -2642,16 +2661,21 @@ class SpotifyLauncher(QMainWindow):
         Update the appropriate progress bar based on the phase.
         
         Args:
-            value (int): Progress value (0-100), -1 for phase1 complete, -2 for phase transition
+            value (int): Progress value (0-100), or special codes for different status updates
             status (str): Status message
         """
         try:
             # Log all progress updates for debugging
-            self.log_status(f"Progress update received: value={value}, status={status}")
+            self.log_status(f"Spotify progress update received: value={value}, status={status}")
             
-            # Special value handling:
-            # -1: Phase 1 complete signal
-            # -2: Phase transition signal
+            # Special status update codes:
+            # -1: Phase 1 complete
+            # -2: Phase transition
+            # -3: Processing artist
+            # -4: Creating playlist
+            # -5: Playlist created
+            # -6: Processing genre
+            # -7: Finding tracks for artist
             
             # Handle phase transition with special code -2
             if value == -2 or any(marker in status.lower() for marker in [
@@ -2670,27 +2694,102 @@ class SpotifyLauncher(QMainWindow):
                     self.spotify_progress2.setValue(0)
                     self.spotify_status2.setText("Starting Playlist Generation")
                 return
-                    
+            
             # Handle phase 1 completion signal with special code -1
             if value == -1 and not self.phase2_active:
                 # Don't change the progress bar, just update the status text
                 self.spotify_status1.setText("Artist Classification Complete")
                 return
-                    
-            # Look for specific progress updates in the format "FOUND ARTIST PROGRESS: X/Y artists - Z.Z%"
-            progress_match = re.search(r'FOUND ARTIST PROGRESS: (\d+)/(\d+) artists - (\d+\.\d+)%', status)
-            if progress_match:
-                current = int(progress_match.group(1))
-                total = int(progress_match.group(2))
-                percentage = float(progress_match.group(3))
+            
+            # Advanced artist processing pattern matching
+            artist_match = re.search(r'Processing: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
+            detailed_artist_match = re.search(r'=== PROCESSING: (.+?) ===', status)
+            
+            if artist_match:
+                percentage = float(artist_match.group(1))
+                current = int(artist_match.group(2))
+                total = int(artist_match.group(3))
                 
-                # Convert percentage to integer and update progress bar
-                int_percentage = int(percentage)
-                
-                # Only update if we're in phase 1 (not yet transitioned)
+                # Set progress bar
                 if not self.phase2_active:
-                    self.spotify_progress1.setValue(int_percentage)
-                    self.spotify_status1.setText(f"Processing artists: {current}/{total}")
+                    self.spotify_progress1.setValue(int(percentage))
+                    
+                    # Detailed status with artist count
+                    status_text = f"Processing artist {current} of {total}"
+                    self.spotify_status1.setText(self.truncate_status(status_text))
+                    
+                    # Log the progress for debugging
+                    self.log_status(f"Updated Phase 1 progress bar to {percentage}% ({current}/{total})")
+                else:
+                    self.spotify_progress2.setValue(int(percentage))
+                    
+                    # Detailed status with artist count
+                    status_text = f"Processing artist {current} of {total} (Playlist Generation)"
+                    self.spotify_status2.setText(self.truncate_status(status_text))
+                    
+                    # Log the progress for debugging
+                    self.log_status(f"Updated Phase 2 progress bar to {percentage}% ({current}/{total})")
+                
+                return
+            
+            # Fall back to alternative artist processing pattern
+            elif detailed_artist_match:
+                current_artist = detailed_artist_match.group(1)
+                
+                # Try to get total artists from elsewhere in the log
+                total_match = re.search(r'Attempting to create (\d+) playlists', self.spotify_output.toPlainText())
+                total = int(total_match.group(1)) if total_match else "unknown"
+                
+                # Use a more generic status that shows processing is ongoing
+                status_text = f"Processing artist: {current_artist}"
+                if total != "unknown":
+                    status_text += f" (estimating progress)"
+                
+                if not self.phase2_active:
+                    self.spotify_status1.setText(self.truncate_status(status_text))
+                else:
+                    self.spotify_status2.setText(self.truncate_status(status_text))
+                
+                return
+            
+            # Handle special artist processing status with code -3
+            if value == -3:
+                if self.phase2_active:
+                    self.spotify_status2.setText(self.truncate_status(status))
+                else:
+                    self.spotify_status1.setText(self.truncate_status(status))
+                return
+            
+            # Handle playlist creation with code -4
+            if value == -4 and self.phase2_active:
+                self.spotify_status2.setText(self.truncate_status(status))
+                # Update progress if it's below a certain threshold
+                if self.spotify_progress2.value() < 60:
+                    self.spotify_progress2.setValue(60)
+                return
+            
+            # Handle successful playlist creation with code -5
+            if value == -5 and self.phase2_active:
+                self.spotify_status2.setText(self.truncate_status(status))
+                # Set progress to at least 80% when playlists are being successfully created
+                if self.spotify_progress2.value() < 80:
+                    self.spotify_progress2.setValue(80)
+                return
+            
+            # Handle genre processing with code -6
+            if value == -6 and self.phase2_active:
+                self.spotify_status2.setText(self.truncate_status(status))
+                # Ensure progress shows movement for genre processing
+                if self.spotify_progress2.value() < 40:
+                    self.spotify_progress2.setValue(40)
+                return
+            
+            # Handle finding tracks for artist with code -7
+            if value == -7 and self.phase2_active:
+                self.spotify_status2.setText(self.truncate_status(status))
+                # Ensure progress shows movement for track finding
+                if self.spotify_progress2.value() < 50:
+                    self.spotify_progress2.setValue(50)
                 return
             
             # Direct progress percentage update (from the value parameter)
@@ -2703,62 +2802,19 @@ class SpotifyLauncher(QMainWindow):
                 else:
                     self.spotify_progress1.setValue(value)
             
-            # Handle "Organizing tracks for artist" messages in Phase 2
-            if self.phase2_active and "organizing tracks for artist:" in status.lower():
-                # Extract artist name
-                artist_match = re.search(r'organizing tracks for artist: (.+)', status, re.IGNORECASE)
-                if artist_match:
-                    artist_name = artist_match.group(1)
-                    self.spotify_status2.setText(f"Processing artist: {artist_name}")
-                    
-                    # Update progress for Phase 2
-                    if self.spotify_progress2.value() < 50:
-                        self.spotify_progress2.setValue(50)  # Ensure progress is shown
-                return
-            
-            # Handle creating playlist messages
-            if self.phase2_active and "creating playlist" in status.lower():
-                playlist_match = re.search(r"creating playlist '(.+?)'", status.lower())
-                if playlist_match:
-                    playlist_name = playlist_match.group(1)
-                    self.spotify_status2.setText(f"Creating playlist: {playlist_name}")
-                    self.spotify_progress2.setValue(75)  # Set to 75% when creating playlists
-                return
-            
-            # Handle playlist success message
-            if self.phase2_active and "playlist url:" in status.lower():
-                self.spotify_status2.setText("Playlist created successfully")
-                self.spotify_progress2.setValue(90)  # Near completion
-                return
-                
-            # Handle "Genre Lookup Summary" messages in Phase 1
-            if "genre lookup summary:" in status.lower() and not self.phase2_active:
-                self.spotify_status1.setText("Finalizing genre classification...")
-                # Only set the progress if it's significantly lower
-                if self.spotify_progress1.value() < 90:
-                    self.spotify_progress1.setValue(90)  # Near completion of Phase 1
-                return
-            
             # Regular status updates - determine which phase to update
             if self.phase2_active:
-                # Update Phase 2 status text for meaningful messages
+                # Only update status text for meaningful messages
                 if not any(skip in status.lower() for skip in [
                     "found virtual environment", 
                     "spotify authentication", 
                     "executing:", 
                     "working directory:",
                     "found artist progress:",
-                    "progress: "  # Ignore raw progress messages
+                    "progress: ",  # Ignore raw progress messages
+                    "pausing for"   # Ignore rate limit pausing messages
                 ]):
                     self.spotify_status2.setText(self.truncate_status(status))
-                
-                # Try to extract progress information from common playlist patterns
-                if "adding tracks to playlist" in status.lower():
-                    current_value = self.spotify_progress2.value()
-                    if current_value < 80:
-                        # Increment gradually rather than jumping
-                        new_value = min(current_value + 5, 80)
-                        self.spotify_progress2.setValue(new_value)
             else:
                 # Only update status text for Phase 1 if not a progress percentage update
                 if not any(skip in status.lower() for skip in [
@@ -2767,9 +2823,178 @@ class SpotifyLauncher(QMainWindow):
                     "executing:", 
                     "working directory:",
                     "found artist progress:",
-                    "progress: "  # Ignore raw progress messages
+                    "progress: ",  # Ignore raw progress messages
+                    "pausing for"  # Ignore rate limit pausing messages
                 ]):
                     self.spotify_status1.setText(self.truncate_status(status))
+        
+        except Exception as e:
+            # Log the error but don't crash
+            error_msg = f"Error in update_spotify_progress: {str(e)}\n{traceback.format_exc()}"
+            self.log_status(error_msg)
+            print(f"Error in update_spotify_progress: {str(e)}")    
+            
+    def update_discovery_progress(self, value: int, status: str):
+        """
+        Update discovery progress with improved status display.
+        
+        Args:
+            value (int): Progress value
+            status (str): Status message
+        """
+        try:
+            # Log all progress updates for debugging
+            self.log_status(f"Progress update received: value={value}, status={status}")
+            
+            # IGNORE all directory-based progress that only has numbers
+            if "directories" in status and re.search(r'directories\)$', status):
+                self.log_status("Ignoring directory progress")
+                return
+            
+            # Special status update codes:
+            # -1: Phase complete
+            # -2: Phase transition
+            # -3: Processing artist
+            # -4: Creating playlist
+            # -5: Playlist created
+            # -6: Processing genre
+            # -7: Finding tracks for artist
+            
+            # Handle special status codes
+            if value < 0:
+                # Don't update progress bar for these special status updates
+                if status and len(status) > 3:
+                    self.discovery_status.setText(self.truncate_status(status))
+                return
+            
+            # Advanced artist processing pattern matching
+            artist_match = re.search(r'Processing: (\d+)/(\d+) artists', status)
+
+            if artist_match:
+                current = int(artist_match.group(1))
+                total = int(artist_match.group(2))
+                
+                # Set progress bar
+                self.discovery_progress.setValue(value)
+                
+                # Detailed status with artist count
+                status_text = f"Processing artist {current} of {total}"
+                self.discovery_status.setText(status_text)
+            
+            # Progress percentage update (from the value parameter)
+            if isinstance(value, int) and value >= 0 and value <= 100:
+                self.discovery_progress.setValue(value)
+                self.log_status(f"Set progress to {value}% from value parameter")
+        
+        except Exception as e:
+            # Log the error but don't crash
+            error_msg = f"Error in update_discovery_progress: {str(e)}\n{traceback.format_exc()}"
+            self.log_status(error_msg)
+            print(error_msg)
+
+    def throttle_status_update(self, phase: str, status: str, label) -> bool:
+        """
+        Throttle status updates to prevent rapid flickering.
+        
+        Args:
+            phase (str): Phase identifier ('discovery', 'spotify_phase1', 'spotify_phase2')
+            status (str): Status message to potentially update
+            label (QLabel): Label to update
+            
+        Returns:
+            bool: Whether the update should proceed
+        """
+        current_time = time.time()
+        last_update = STATUS_UPDATE_THROTTLE.get(phase, 0)
+        
+        # Throttle to 1 seconds between updates
+        if current_time - last_update >= 1:
+            STATUS_UPDATE_THROTTLE[phase] = current_time
+            return True
+        
+        return False
+
+    def update_spotify_progress(self, value: int, status: str):
+        """
+        Update the appropriate progress bar based on the phase.
+        
+        Args:
+            value (int): Progress value (0-100), or special codes for different status updates
+            status (str): Status message
+        """
+        try:
+            # Log all progress updates for debugging
+            self.log_status(f"Spotify progress update received: value={value}, status={status}")
+            
+            # Special status update codes:
+            # -1: Phase 1 complete
+            # -2: Phase transition
+            # -3: Processing artist
+            # -4: Creating playlist
+            # -5: Playlist created
+            # -6: Processing genre
+            # -7: Finding tracks for artist
+            
+            # Handle phase transition with special code -2
+            if value == -2 or any(marker in status.lower() for marker in [
+                "starting playlist generation",
+                "processing genres", 
+                "processing artists in genre",
+                "generating playlist",
+                "creating playlist"
+            ]):
+                # Mark Phase 1 as complete (but don't change its current progress)
+                # Only do this once when transitioning
+                if not self.phase2_active:
+                    self.spotify_status1.setText("Artist Classification Complete")
+                    # Initialize Phase 2
+                    self.phase2_active = True
+                    self.spotify_progress2.setValue(0)
+                    self.spotify_status2.setText("Starting Playlist Generation")
+                return
+            
+            # Handle phase 1 completion signal with special code -1
+            if value == -1 and not self.phase2_active:
+                # Don't change the progress bar, just update the status text
+                self.spotify_status1.setText("Artist Classification Complete")
+                return
+            
+            # Advanced artist processing pattern matching
+            artist_match = re.search(r'Processing: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
+
+            if artist_match:
+                percentage = float(artist_match.group(1))
+                current = int(artist_match.group(2))
+                total = int(artist_match.group(3))
+                
+                # Set progress bar
+                if not self.phase2_active:
+                    self.spotify_progress1.setValue(int(percentage))
+                    
+                    # Detailed status with artist count
+                    status_text = f"Processing artist {current} of {total}"
+                    self.spotify_status1.setText(status_text)
+                else:
+                    self.spotify_progress2.setValue(int(percentage))
+                    
+                    # Detailed status with artist count
+                    status_text = f"Processing artist {current} of {total} (Playlist Generation)"
+                    self.spotify_status2.setText(status_text)
+                    
+                    # Log the progress for debugging
+                    self.log_status(f"Updated Phase 2 progress bar to {percentage}% ({current}/{total})")
+                
+                return
+            
+            # Direct progress percentage update (from the value parameter)
+            if 0 <= value <= 100:
+                if self.phase2_active:
+                    self.spotify_progress2.setValue(value)
+                    # If this is a completion signal
+                    if value >= 95:
+                        self.spotify_status2.setText("Completing playlist generation...")
+                else:
+                    self.spotify_progress1.setValue(value)
         
         except Exception as e:
             # Log the error but don't crash
@@ -2862,20 +3087,41 @@ class SpotifyLauncher(QMainWindow):
         self.phase2_active = False
             
     def truncate_status(self, status: str, max_length: int = 70) -> str:
-        """
-        Truncate status text to reasonable length for display.
+        # Remove any ANSI color codes that might be in the text
+        status = re.sub(r'\033\[\d+m', '', status)
         
-        Args:
-            status (str): Status message to truncate
-            max_length (int): Maximum length
-            
-        Returns:
-            str: Truncated status message
-        """
+        # Filter out common prefixes that don't add value in the status display
+        prefixes_to_remove = [
+            "DEBUG: ", 
+            "INFO: ", 
+            "WORKER: ",
+            "SPOTIFY: ",
+            "DISCOVERY: "
+        ]
+        
+        for prefix in prefixes_to_remove:
+            if status.startswith(prefix):
+                status = status[len(prefix):]
+                break
+        
+        if any(phrase in line.lower() for phrase in [
+            "pausing for",
+            "to respect rate limit",
+            "sleeping to respect",
+            "respecting rate limit"
+        ]):
+            return False
+        
+        # Smart truncation - try to keep the most important part
         if len(status) <= max_length:
             return status
         else:
-            return status[:max_length-3] + "..."
+            # Try to find a good breaking point
+            last_space = status[:max_length-3].rfind(' ')
+            if last_space > max_length/2:  # Only break at space if it's reasonably positioned
+                return status[:last_space] + "..."
+            else:
+                return status[:max_length-3] + "..."
             
     def closeEvent(self, event):
         """
