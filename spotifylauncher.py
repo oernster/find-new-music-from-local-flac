@@ -12,14 +12,14 @@ import traceback
 import queue
 import re
 import json
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional
 import ctypes
 from ctypes import windll, byref, sizeof, c_int
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QDialog, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QLineEdit,
     QTextEdit, QMenuBar, QMenu, QAction, QMessageBox, QProgressBar, QTabWidget, QWIDGETSIZE_MAX, QPushButton,
-    QFileDialog
+    QFileDialog, QCheckBox, QGroupBox
 )
 from PyQt5.QtGui import QIcon, QFont, QColor, QPalette, QPainter, QPainterPath
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QMutex, QMutexLocker, pyqtSlot, QEvent, QRect
@@ -737,7 +737,17 @@ class SpotifyLauncher(QMainWindow):
         # Add the output tabs to the main layout
         main_layout.addWidget(self.output_tabs)
         
-        # Set up the menu bar
+        # Create actions for toggling views
+        # Default to OFF for both console and debug tab
+        self.toggle_console_action = QAction('Show Console Output', self, checkable=True)
+        self.toggle_console_action.setChecked(False)  # Default OFF on first run
+        self.toggle_console_action.triggered.connect(self.safe_toggle_console_output)
+        
+        self.toggle_debug_action = QAction('Show Debug Tab', self, checkable=True)
+        self.toggle_debug_action.setChecked(False)  # Default OFF on first run
+        self.toggle_debug_action.triggered.connect(self.safe_toggle_debug_tab)
+        
+        # Set up the menu bar (after creating toggle actions)
         self.setup_menu()
         
         # Store process references
@@ -750,22 +760,22 @@ class SpotifyLauncher(QMainWindow):
         
         # Load and set the icon
         self.load_set_icon()
-            
+        
         # Log startup information
         self.log_status("Application started")
         self.log_status(f"Running from: {self.get_base_dir()}")
         # Log Python version
         self.log_status(f"Python version: {sys.version}")
         
-        # Hide debug tab by default
+        # Hide debug tab by default - before loading settings
         self.toggle_debug_tab(False)
         
-        # Apply dark theme instead of the previous styling methods
+        # Apply dark theme
         self.apply_dark_theme()
-                
+        
         # Set up tab changed tracking
         self.output_tabs.currentChanged.connect(self.tab_changed)
-                
+        
         # Set app and window title to dark
         palette = self.palette()
         dark_bg = QColor("#121212")
@@ -773,8 +783,10 @@ class SpotifyLauncher(QMainWindow):
         palette.setColor(QPalette.WindowText, QColor("#E0E0E0"))
         self.setPalette(palette)
         
-        self.toggle_console_action.setChecked(False)  # Default to hidden logs
-        self.toggle_console_output(False)             # Apply the hidden state
+        # Load saved settings from config file - this will override defaults if config exists
+        self.load_settings()
+        
+        # Apply dark theme to titlebar - after all other UI initialization
         self.apply_dark_theme_to_titlebar()
 
     def event(self, event):
@@ -862,97 +874,6 @@ class SpotifyLauncher(QMainWindow):
                 self.log_status("Applied fallback dark title styling")
             except Exception as e:
                 self.log_status(f"Error in fallback title styling: {str(e)}")
-
-    def apply_rounded_style(self):
-        """Apply rounded corners style and custom colors to the application's UI elements."""
-        # Pale yellow for app background
-        app_background_color = "#FFFFD0"  # Pale yellow
-        button_background_color = "#B3D9FF"  # Light blue
-        button_hover_color = "#99CCFF"  # Slightly darker blue for hover
-        button_pressed_color = "#80BFFF"  # Even darker blue when pressed
-        
-        # Set main window background color
-        self.central_widget.setStyleSheet(f"background-color: {app_background_color};")
-        
-        # Style for rounded buttons with light blue background
-        button_style = f"""
-            QPushButton {{
-                border-radius: 8px;
-                background-color: {button_background_color};
-                border: 1px solid #8CB3D9;
-                padding: 8px 16px;
-                color: #333333;
-                font-weight: bold;
-            }}
-            
-            QPushButton:hover {{
-                background-color: {button_hover_color};
-            }}
-            
-            QPushButton:pressed {{
-                background-color: {button_pressed_color};
-            }}
-            
-            QPushButton:disabled {{
-                background-color: #D9E6F2;
-                color: #999999;
-            }}
-        """
-        
-        # Style for text areas (QTextEdit)
-        textedit_style = """
-            QTextEdit {
-                border-radius: 8px;
-                border: 1px solid #D9D0A3;
-                padding: 5px;
-                background-color: #ffffff;
-            }
-        """
-        
-        # Apply styles to buttons
-        self.discovery_button.setStyleSheet(button_style)
-        self.spotify_button.setStyleSheet(button_style)
-        
-        # Apply styles to text areas
-        self.discovery_output.setStyleSheet(textedit_style)
-        self.spotify_output.setStyleSheet(textedit_style)
-        self.debug_output.setStyleSheet(textedit_style)
-        
-        # Style for the tab widget to match the rounded theme
-        tab_style = f"""
-            QTabWidget::pane {{
-                border-radius: 8px;
-                border: 1px solid #D9D0A3;
-            }}
-            
-            QTabBar::tab {{
-                border-radius: 4px 4px 0 0;
-                padding: 5px 10px;
-                margin-right: 2px;
-                background-color: #E6E6B8;
-            }}
-            
-            QTabBar::tab:selected {{
-                background-color: {app_background_color};
-            }}
-            
-            QTabBar::tab:hover:!selected {{
-                background-color: #D9D9AD;
-            }}
-        """
-        self.output_tabs.setStyleSheet(tab_style)
-        
-        # Style for labels
-        label_style = """
-            QLabel {
-                color: #333333;
-            }
-        """
-        self.spotify_phase1_label.setStyleSheet(label_style)
-        self.spotify_phase2_label.setStyleSheet(label_style)
-        self.discovery_status.setStyleSheet(label_style)
-        self.spotify_status1.setStyleSheet(label_style)
-        self.spotify_status2.setStyleSheet(label_style)
 
     def apply_dark_theme(self):
         """Apply a dark theme with modern colors to the application."""
@@ -1167,91 +1088,6 @@ class SpotifyLauncher(QMainWindow):
             }}
         """)
 
-    def show_music_dir_dialog(self):
-        """Show a dialog to set the music directory."""
-        # Create a dialog
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Set Music Directory")
-        dialog.setMinimumWidth(400)
-        
-        # Create layout
-        layout = QVBoxLayout()
-        dialog.setLayout(layout)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
-        
-        # Create label
-        label = QLabel("Enter your music directory path:")
-        layout.addWidget(label)
-        
-        # Create text field with current value
-        music_dir_input = QLineEdit()
-        current_dir = self.get_configured_music_dir()
-        music_dir_input.setText(current_dir)  # Use current value
-        layout.addWidget(music_dir_input)
-        
-        # Create browse button
-        browse_button = QPushButton("Browse...")
-        browse_button.clicked.connect(lambda: self.browse_music_dir(music_dir_input))
-        layout.addWidget(browse_button)
-        
-        # Add spacer
-        layout.addSpacing(10)
-        
-        # Create buttons
-        button_layout = QHBoxLayout()
-        save_button = QPushButton("Save")
-        save_button.clicked.connect(lambda: self.save_music_dir(dialog, music_dir_input.text()))
-        cancel_button = QPushButton("Cancel")
-        cancel_button.clicked.connect(dialog.reject)
-        button_layout.addWidget(cancel_button)
-        button_layout.addWidget(save_button)
-        layout.addLayout(button_layout)
-        
-        # Apply dark theme styling
-        dark_bg = "#121212"           # Dark background
-        darker_bg = "#0A0A0A"         # Darker accent background
-        dark_accent = "#1F1F1F"       # Slightly lighter accent
-        text_color = "#E0E0E0"        # Light text color
-        spotify_green = "#1DB954"     # Spotify green
-        border_color = "#333333"      # Border color
-        
-        dialog.setStyleSheet(f"""
-            QDialog {{
-                background-color: {dark_bg};
-                color: {text_color};
-            }}
-            QLabel {{
-                color: {text_color};
-                font-size: 12px;
-            }}
-            QLineEdit {{
-                background-color: {dark_accent};
-                color: {text_color};
-                border: 1px solid {border_color};
-                border-radius: 4px;
-                padding: 8px;
-                selection-background-color: {spotify_green};
-            }}
-            QPushButton {{
-                background-color: {spotify_green};
-                color: white;
-                border-radius: 4px;
-                padding: 8px 16px;
-                font-weight: bold;
-                border: none;
-            }}
-            QPushButton:hover {{
-                background-color: #1ED760;
-            }}
-            QPushButton:pressed {{
-                background-color: #169C46;
-            }}
-        """)
-        
-        # Show the dialog
-        dialog.exec_()
-
     def is_configuration_valid(self):
         """Check if a valid configuration exists."""
         config_path = os.path.join(self.get_base_dir(), "config.json")
@@ -1267,6 +1103,13 @@ class SpotifyLauncher(QMainWindow):
                 # Check if music directory exists
                 if not music_dir or not os.path.isdir(music_dir):
                     return False
+                    
+                # Check for UI settings - they're optional, so just log if missing
+                if "debug_tab_enabled" not in config:
+                    self.log_status("Warning: debug_tab_enabled not found in config")
+                    
+                if "console_output_enabled" not in config:
+                    self.log_status("Warning: console_output_enabled not found in config")
                     
                 return True
         except Exception as e:
@@ -1399,8 +1242,8 @@ class SpotifyLauncher(QMainWindow):
         
         # Check if configuration exists
         if not self.is_configuration_valid():
-            self.log_status("No valid configuration found. Showing settings dialog.")
-            self.show_music_dir_dialog()
+            self.log_status("No valid configuration found. Showing options dialog.")
+            self.show_options_dialog()
             return
             
         # Clear the last button clicked as we're proceeding normally
@@ -1416,8 +1259,8 @@ class SpotifyLauncher(QMainWindow):
         
         # Check if configuration exists
         if not self.is_configuration_valid():
-            self.log_status("No valid configuration found. Showing settings dialog.")
-            self.show_music_dir_dialog()
+            self.log_status("No valid configuration found. Showing options dialog.")
+            self.show_options_dialog()
             return
             
         # Clear the last button clicked as we're proceeding normally
@@ -1535,6 +1378,69 @@ class SpotifyLauncher(QMainWindow):
         # Activate the Music Discovery output tab
         self.output_tabs.setCurrentWidget(self.discovery_output)
 
+        # Get configured music directory from config file
+        music_dir = self.get_configured_music_dir()
+        
+        # Check if the music directory exists
+        if not os.path.isdir(music_dir):
+            error_msg = f"Music directory does not exist: {music_dir}"
+            self.log_status(error_msg)
+            self.log_discovery_output(f"ERROR: {error_msg}")
+            self.discovery_status.setText("Error: Directory not found")
+            self.discovery_button.setEnabled(True)
+            self.spotify_button.setEnabled(True)
+            
+            # Show error message to user
+            error_dialog = QMessageBox(self)
+            error_dialog.setWindowTitle("Music Directory Error")
+            error_dialog.setText(f"The music directory does not exist:\n{music_dir}\n\nPlease select a valid directory in Settings.")
+            error_dialog.setIcon(QMessageBox.Critical)
+            self.apply_dark_style_to_message_box(error_dialog)
+            error_dialog.exec_()
+            
+            # Set flag to show options dialog on next button press
+            self.last_button_clicked = 'discovery_error'
+            return
+        
+        # Check if there are any subdirectories in the music directory
+        has_subdirs = False
+        try:
+            for item in os.listdir(music_dir):
+                subdir_path = os.path.join(music_dir, item)
+                if os.path.isdir(subdir_path):
+                    has_subdirs = True
+                    break
+                    
+            if not has_subdirs:
+                error_msg = f"No subdirectories found in music directory: {music_dir}"
+                self.log_status(error_msg)
+                self.log_discovery_output(f"ERROR: {error_msg}")
+                self.discovery_status.setText("Error: No artist folders")
+                self.discovery_button.setEnabled(True)
+                self.spotify_button.setEnabled(True)
+                
+                # Show error message to user
+                error_dialog = QMessageBox(self)
+                error_dialog.setWindowTitle("No Artist Folders Found")
+                error_dialog.setText("No artist folders were found in your music directory.\n\n" +
+                                    "This application requires your music to be organized in artist folders (subdirectories).\n\n" +
+                                    "Please organize your music into artist folders before running Music Discovery.")
+                error_dialog.setIcon(QMessageBox.Warning)
+                self.apply_dark_style_to_message_box(error_dialog)
+                error_dialog.exec_()
+                
+                # Set flag to show options dialog on next button press
+                self.last_button_clicked = 'discovery_error'
+                return
+        except Exception as e:
+            error_msg = f"Error checking subdirectories: {str(e)}"
+            self.log_status(error_msg)
+            self.log_discovery_output(f"ERROR: {error_msg}")
+            self.discovery_status.setText("Error checking folders")
+            self.discovery_button.setEnabled(True)
+            self.spotify_button.setEnabled(True)
+            return
+
         # Find the script
         script_path = self.find_script("musicdiscovery.py")
         if not script_path:
@@ -1547,9 +1453,6 @@ class SpotifyLauncher(QMainWindow):
         self.log_status(f"Found script at: {script_path}")
 
         try:
-            # Get configured music directory from config file
-            music_dir = self.get_configured_music_dir()
-            
             # Create and start the worker thread
             self.discovery_worker = ScriptWorker(script_path, "Music Discovery")
 
@@ -1585,13 +1488,175 @@ class SpotifyLauncher(QMainWindow):
             self.spotify_button.setEnabled(True)
             self.discovery_status.setText("Error starting process")
 
-    def save_music_dir(self, dialog, music_dir):
+    def show_options_dialog(self):
+        """Show the Options dialog with music directory and view settings."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Options")
+        dialog.setMinimumWidth(500)
+        
+        # Create layout
+        layout = QVBoxLayout()
+        dialog.setLayout(layout)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        # Music Directory section
+        music_dir_layout = QHBoxLayout()
+        
+        # Create label
+        music_dir_label = QLabel("Music Directory:")
+        music_dir_layout.addWidget(music_dir_label)
+        
+        # Create text field with current value
+        music_dir_input = QLineEdit()
+        current_dir = self.get_configured_music_dir()
+        music_dir_input.setText(current_dir)  # Use current value
+        music_dir_layout.addWidget(music_dir_input)
+        
+        # Create browse button
+        browse_button = QPushButton("Browse...")
+        browse_button.clicked.connect(lambda: self.browse_music_dir(music_dir_input))
+        music_dir_layout.addWidget(browse_button)
+        
+        layout.addLayout(music_dir_layout)
+        
+        # View Options section
+        view_options_group = QGroupBox("View Options")
+        view_options_layout = QVBoxLayout()
+        
+        # Debug Tab Toggle
+        debug_toggle_layout = QHBoxLayout()
+        debug_label = QLabel("Show Debug Tab")
+        debug_toggle = QCheckBox()
+        debug_toggle.setChecked(self.toggle_debug_action.isChecked())
+        debug_toggle_layout.addWidget(debug_label)
+        debug_toggle_layout.addStretch()
+        debug_toggle_layout.addWidget(debug_toggle)
+        view_options_layout.addLayout(debug_toggle_layout)
+        
+        # Console Output Toggle
+        console_toggle_layout = QHBoxLayout()
+        console_label = QLabel("Show Console Output")
+        console_toggle = QCheckBox()
+        console_toggle.setChecked(self.toggle_console_action.isChecked())
+        console_toggle_layout.addWidget(console_label)
+        console_toggle_layout.addStretch()
+        console_toggle_layout.addWidget(console_toggle)
+        view_options_layout.addLayout(console_toggle_layout)
+        
+        view_options_group.setLayout(view_options_layout)
+        layout.addWidget(view_options_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        save_button = QPushButton("Save")
+        cancel_button = QPushButton("Cancel")
+        button_layout.addStretch()
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(save_button)
+        layout.addLayout(button_layout)
+        
+        # Button connections
+        cancel_button.clicked.connect(dialog.reject)
+        save_button.clicked.connect(lambda: self.save_options(dialog, music_dir_input.text(), 
+                                                             debug_toggle.isChecked(), 
+                                                             console_toggle.isChecked()))
+        
+        # Apply dark theme styling
+        dark_bg = "#121212"           # Dark background
+        dark_accent = "#1F1F1F"       # Slightly lighter accent
+        text_color = "#E0E0E0"        # Light text color
+        spotify_green = "#1DB954"     # Spotify green
+        border_color = "#333333"      # Border color
+        
+        dialog.setStyleSheet(f"""
+            QDialog {{
+                background-color: {dark_bg};
+                color: {text_color};
+            }}
+            QLabel, QCheckBox {{
+                color: {text_color};
+            }}
+            QLineEdit {{
+                background-color: {dark_accent};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 4px;
+                padding: 8px;
+            }}
+            QPushButton {{
+                background-color: {spotify_green};
+                color: white;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+                border: none;
+            }}
+            QPushButton:hover {{
+                background-color: #1ED760;
+            }}
+            QPushButton:pressed {{
+                background-color: #169C46;
+            }}
+            QGroupBox {{
+                color: {text_color};
+                border: 1px solid {border_color};
+                margin-top: 10px;
+                font-weight: bold;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px;
+            }}
+        """)
+        
+        # Apply dark title bar using Windows API (for Windows only)
+        try:
+            if sys.platform == 'win32':
+                # Define Windows API constants
+                DWMWA_CAPTION_COLOR = 35  # DWM caption color attribute
+                DWMWA_TEXT_COLOR = 36     # DWM caption text color attribute
+                
+                # Dark title bar color (#121212) in COLORREF format
+                dark_title_color = 0x00121212
+                
+                # Light text color (white #FFFFFF) in COLORREF format
+                light_text_color = 0x00FFFFFF
+                
+                # Get the window handle
+                hWnd = dialog.winId()
+                
+                # Apply the dark color to the title bar
+                windll.dwmapi.DwmSetWindowAttribute(
+                    int(hWnd),
+                    DWMWA_CAPTION_COLOR,
+                    byref(c_int(dark_title_color)),
+                    sizeof(c_int)
+                )
+                
+                # Apply the light text color to the title bar
+                windll.dwmapi.DwmSetWindowAttribute(
+                    int(hWnd),
+                    DWMWA_TEXT_COLOR,
+                    byref(c_int(light_text_color)),
+                    sizeof(c_int)
+                )
+        except Exception as e:
+            print(f"Error setting title bar color for options dialog: {e}")
+        
+        # Show the dialog
+        dialog.exec_()
+
+    def save_options(self, dialog, music_dir, debug_tab_enabled, console_output_enabled):
         """
-        Save the music directory path.
+        Save options from the Options dialog.
         
         Args:
-            dialog (QDialog): The dialog to close on success
-            music_dir (str): The directory path to save
+            dialog (QDialog): The dialog to close
+            music_dir (str): Selected music directory
+            debug_tab_enabled (bool): Whether debug tab is enabled
+            console_output_enabled (bool): Whether console output is enabled
         """
         # Validate directory exists
         if not os.path.isdir(music_dir):
@@ -1605,39 +1670,43 @@ class SpotifyLauncher(QMainWindow):
         
         # Save the directory path to a config file
         config_path = os.path.join(self.get_base_dir(), "config.json")
-        config = {"music_directory": music_dir}
+        config = {
+            "music_directory": music_dir,
+            "debug_tab_enabled": debug_tab_enabled,
+            "console_output_enabled": console_output_enabled
+        }
         
         try:
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
             
-            self.log_status(f"Music directory set to: {music_dir}")
-            self.discovery_status.setText(f"Music directory: {music_dir}")
+            # Update view settings
+            if debug_tab_enabled != self.toggle_debug_action.isChecked():
+                self.toggle_debug_action.setChecked(debug_tab_enabled)
+                self.safe_toggle_debug_tab(debug_tab_enabled)
+            
+            if console_output_enabled != self.toggle_console_action.isChecked():
+                self.toggle_console_action.setChecked(console_output_enabled)
+                self.safe_toggle_console_output(console_output_enabled)
+            
+            # Close the dialog
             dialog.accept()
             
-            # Show confirmation with dark mode styling
-            confirm_dialog = QMessageBox(self)
-            confirm_dialog.setWindowTitle("Directory Saved")
-            confirm_dialog.setText(f"Music directory has been set to:\n{music_dir}")
-            confirm_dialog.setIcon(QMessageBox.Information)
-            self.apply_dark_style_to_message_box(confirm_dialog)
-            confirm_dialog.exec_()
-            
-            # Make sure buttons are enabled
-            self.discovery_button.setEnabled(True)
-            self.spotify_button.setEnabled(True)
-            
-            # Check which button was originally clicked
-            if hasattr(self, 'last_button_clicked'):
-                if self.last_button_clicked == 'discovery':
-                    # Just call this method, don't disable buttons first
-                    self.run_music_discovery()
-                elif self.last_button_clicked == 'spotify':
-                    # Just call this method, don't disable buttons first
-                    self.run_spotify_client()
-                
-                # Reset the last button clicked
-                self.last_button_clicked = None
+            # Check if we should resume a specific operation
+            if self.last_button_clicked == 'discovery':
+                self.log_status("Resuming Music Discovery operation after configuration")
+                self.run_music_discovery()
+            elif self.last_button_clicked == 'spotify':
+                self.log_status("Resuming Spotify Client operation after configuration")
+                self.run_spotify_client()
+            else:
+                # Show confirmation
+                confirm_dialog = QMessageBox(self)
+                confirm_dialog.setWindowTitle("Options Saved")
+                confirm_dialog.setText("Options have been successfully saved.")
+                confirm_dialog.setIcon(QMessageBox.Information)
+                self.apply_dark_style_to_message_box(confirm_dialog)
+                confirm_dialog.exec_()
             
         except Exception as e:
             error_dialog = QMessageBox(self)
@@ -1651,28 +1720,13 @@ class SpotifyLauncher(QMainWindow):
         """Set up the menu bar with options."""
         menubar = self.menuBar()
         
-        # Settings menu (new)
+        # Settings menu 
         settings_menu = menubar.addMenu('Settings')
         
-        # Set Music Directory action
-        set_music_dir_action = QAction('Set Music Directory', self)
-        set_music_dir_action.triggered.connect(self.show_music_dir_dialog)
-        settings_menu.addAction(set_music_dir_action)
-        
-        # View menu
-        view_menu = menubar.addMenu('View')
-        
-        # Toggle debug tab 
-        self.toggle_debug_action = QAction('Show Debug Tab', self, checkable=True)
-        self.toggle_debug_action.setChecked(False)
-        self.toggle_debug_action.triggered.connect(self.safe_toggle_debug_tab)
-        view_menu.addAction(self.toggle_debug_action)
-        
-        # Toggle console output
-        self.toggle_console_action = QAction('Show Console Output', self, checkable=True)
-        self.toggle_console_action.setChecked(True)  # On by default
-        self.toggle_console_action.triggered.connect(self.safe_toggle_console_output)
-        view_menu.addAction(self.toggle_console_action)
+        # Options action to open dialog with multiple settings
+        options_action = QAction('Options', self)
+        options_action.triggered.connect(self.show_options_dialog)
+        settings_menu.addAction(options_action)
         
         # Help menu
         help_menu = menubar.addMenu('Help')
@@ -1695,13 +1749,55 @@ class SpotifyLauncher(QMainWindow):
             checked (bool): Whether debug tab should be visible
         """
         try:
+            # Check if any processes are running
+            processes_running = False
+            if hasattr(self, 'discovery_worker') and self.discovery_worker and self.discovery_worker.isRunning():
+                processes_running = True
+            if hasattr(self, 'spotify_worker') and self.spotify_worker and self.spotify_worker.isRunning():
+                processes_running = True
+            
+            # If processes are running, show a warning dialog
+            if processes_running:
+                # Create custom error dialog
+                error_dialog = QMessageBox(self)
+                error_dialog.setWindowTitle("Cannot Change View")
+                error_dialog.setText("Cannot change console visibility while processes are running.\n" +
+                                     "Please wait for the current operation to complete.")
+                error_dialog.setIcon(QMessageBox.Warning)
+                
+                # Apply dark theme styling to the dialog
+                self.apply_dark_style_to_message_box(error_dialog)
+                
+                # Show the dialog
+                error_dialog.exec_()
+                
+                # Restore the action state to match the current visibility
+                current_visible = self.output_tabs.indexOf(self.debug_output) != -1
+                self.toggle_debug_action.blockSignals(True)
+                self.toggle_debug_action.setChecked(current_visible)
+                self.toggle_debug_action.blockSignals(False)
+                return
+            
+            # Proceed with toggling if no processes are running
             self.toggle_debug_tab(checked)
+            
         except Exception as e:
-            # If any exception occurs, restore the previous state
+            # If any exception occurs during toggling
             self.log_status(f"Error toggling debug tab: {str(e)}")
-            QMessageBox.warning(self, "View Error", 
-                              f"An error occurred while changing the view: {str(e)}")
-            # Attempt to restore the action state (without triggering another toggle)
+            
+            # Create custom error dialog
+            error_dialog = QMessageBox(self)
+            error_dialog.setWindowTitle("View Error")
+            error_dialog.setText(f"An error occurred while changing the view: {str(e)}")
+            error_dialog.setIcon(QMessageBox.Warning)
+            
+            # Apply dark theme styling to the dialog
+            self.apply_dark_style_to_message_box(error_dialog)
+            
+            # Show the dialog
+            error_dialog.exec_()
+            
+            # Attempt to restore the action state
             current_visible = self.output_tabs.indexOf(self.debug_output) != -1
             self.toggle_debug_action.blockSignals(True)
             self.toggle_debug_action.setChecked(current_visible)
@@ -1715,13 +1811,55 @@ class SpotifyLauncher(QMainWindow):
             checked (bool): Whether console output should be visible
         """
         try:
+            # Check if any processes are running
+            processes_running = False
+            if hasattr(self, 'discovery_worker') and self.discovery_worker and self.discovery_worker.isRunning():
+                processes_running = True
+            if hasattr(self, 'spotify_worker') and self.spotify_worker and self.spotify_worker.isRunning():
+                processes_running = True
+            
+            # If processes are running, show a warning dialog
+            if processes_running:
+                # Create custom error dialog
+                error_dialog = QMessageBox(self)
+                error_dialog.setWindowTitle("Cannot Change View")
+                error_dialog.setText("Cannot change console visibility while processes are running.\n" +
+                                     "Please wait for the current operation to complete.")
+                error_dialog.setIcon(QMessageBox.Warning)
+                
+                # Apply dark theme styling to the dialog
+                self.apply_dark_style_to_message_box(error_dialog)
+                
+                # Show the dialog
+                error_dialog.exec_()
+                
+                # Restore the action state to match the current visibility
+                current_visible = self.output_tabs.isVisible()
+                self.toggle_console_action.blockSignals(True)
+                self.toggle_console_action.setChecked(current_visible)
+                self.toggle_console_action.blockSignals(False)
+                return
+            
+            # Proceed with toggling if no processes are running
             self.toggle_console_output(checked)
+            
         except Exception as e:
-            # If any exception occurs, restore the previous state
+            # If any exception occurs during toggling
             self.log_status(f"Error toggling console output: {str(e)}")
-            QMessageBox.warning(self, "View Error", 
-                              f"An error occurred while changing the view: {str(e)}")
-            # Attempt to restore the action state (without triggering another toggle)
+            
+            # Create custom error dialog
+            error_dialog = QMessageBox(self)
+            error_dialog.setWindowTitle("View Error")
+            error_dialog.setText(f"An error occurred while changing the view: {str(e)}")
+            error_dialog.setIcon(QMessageBox.Warning)
+            
+            # Apply dark theme styling to the dialog
+            self.apply_dark_style_to_message_box(error_dialog)
+            
+            # Show the dialog
+            error_dialog.exec_()
+            
+            # Attempt to restore the action state
             current_visible = self.output_tabs.isVisible()
             self.toggle_console_action.blockSignals(True)
             self.toggle_console_action.setChecked(current_visible)
@@ -1760,7 +1898,48 @@ class SpotifyLauncher(QMainWindow):
             idx = self.output_tabs.indexOf(self.debug_output)
             if idx >= 0:
                 self.output_tabs.removeTab(idx)
-                
+    
+    def load_settings(self):
+        """Load and apply saved settings from config file."""
+        config_path = os.path.join(self.get_base_dir(), "config.json")
+        
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    
+                    # Apply debug tab setting
+                    debug_tab_enabled = config.get("debug_tab_enabled", False)
+                    self.toggle_debug_action.setChecked(debug_tab_enabled)
+                    self.toggle_debug_tab(debug_tab_enabled)
+                    self.log_status(f"Debug tab enabled: {debug_tab_enabled}")
+                    
+                    # Apply console output setting
+                    console_output_enabled = config.get("console_output_enabled", False)
+                    self.toggle_console_action.setChecked(console_output_enabled)
+                    self.toggle_console_output(console_output_enabled)
+                    self.log_status(f"Console output enabled: {console_output_enabled}")
+                    
+                    # Log the loaded music directory
+                    music_dir = config.get("music_directory", "")
+                    if music_dir and os.path.isdir(music_dir):
+                        self.log_status(f"Loaded music directory: {music_dir}")
+            else:
+                self.log_status("No config file found, using default settings")
+                # Set default values - no console output and no debug tab on first launch
+                self.toggle_debug_action.setChecked(False)
+                self.toggle_debug_tab(False)
+                self.toggle_console_action.setChecked(False)
+                self.toggle_console_output(False)
+                    
+        except Exception as e:
+            self.log_status(f"Error loading settings: {str(e)}")
+            # Fallback to defaults on error - no console output and no debug tab
+            self.toggle_debug_action.setChecked(False)
+            self.toggle_debug_tab(False)
+            self.toggle_console_action.setChecked(False)
+            self.toggle_console_output(False)  
+    
     def toggle_console_output(self, checked):
         """
         Toggle the visibility of the console output tabs.
@@ -1818,7 +1997,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius v3.3
+    GenreGenius v3.4
     By Oliver Ernster
 
     A tool for discovering music and generating
@@ -2080,92 +2259,59 @@ class SpotifyLauncher(QMainWindow):
         except Exception as e:
             self.log_status(f"Error reading config: {str(e)}")
         
-        # Default fallback
-        default_dir = "C:\\Music"
-        self.log_status(f"Using default music directory: {default_dir}")
-        return default_dir
+        # Default fallback - use user's music folder
+        try:
+            # Get the user's home directory
+            home_dir = os.path.expanduser("~")
+            # Standard "Music" folder in user's profile
+            default_dir = os.path.join(home_dir, "Music")
+            
+            # Check if the Music folder exists
+            if os.path.isdir(default_dir):
+                self.log_status(f"Using user's Music directory: {default_dir}")
+                return default_dir
+                
+            # If Music folder doesn't exist, use Documents as fallback
+            docs_dir = os.path.join(home_dir, "Documents")
+            if os.path.isdir(docs_dir):
+                self.log_status(f"Music folder not found, using Documents directory: {docs_dir}")
+                return docs_dir
+                
+            # Final fallback to home directory
+            self.log_status(f"Using user's home directory: {home_dir}")
+            return home_dir
+                
+        except Exception as e:
+            self.log_status(f"Error finding default music directory: {str(e)}")
+            # Absolute last resort fallback
+            fallback_dir = "C:\\Music"
+            self.log_status(f"Using fallback music directory: {fallback_dir}")
+            return fallback_dir
           
     def launch_music_discovery(self):
         """Launch the Music Discovery script with progress tracking."""
+        # If we had a previous error about missing artist folders or invalid directory,
+        # immediately show the options dialog on next button press
+        if self.last_button_clicked == 'discovery_error':
+            self.log_status("Previous error detected, showing options dialog")
+            self.last_button_clicked = 'discovery'  # Set to normal discovery mode
+            self.show_options_dialog()
+            return
+        
         # Set the last button clicked
         self.last_button_clicked = 'discovery'
         
         # Check if configuration exists
         if not self.is_configuration_valid():
-            self.log_status("No valid configuration found. Showing settings dialog.")
-            self.show_music_dir_dialog()
+            self.log_status("No valid configuration found. Showing options dialog.")
+            self.show_options_dialog()
             return
-            
+        
         # Clear the last button clicked as we're proceeding normally
         self.last_button_clicked = None
         
-        if self.discovery_worker and self.discovery_worker.isRunning():
-            self.log_status("Music Discovery is already running")
-            return
-
-        # Reset UI - clear the status text before showing dialog
-        self.discovery_progress.setValue(0)
-        self.discovery_status.setText("")  # Clear status text completely
-        self.discovery_button.setEnabled(False)
-        
-        # Disable the Spotify button while Music Discovery is running
-        self.spotify_button.setEnabled(False)
-
-        # Clear the output text
-        self.discovery_output.clear()
-
-        # Activate the Music Discovery output tab
-        self.output_tabs.setCurrentWidget(self.discovery_output)
-
-        # Find the script
-        script_path = self.find_script("musicdiscovery.py")
-        if not script_path:
-            self.log_status("ERROR: Could not find musicdiscovery.py!")
-            self.discovery_button.setEnabled(True)
-            self.spotify_button.setEnabled(True)  # Re-enable Spotify button
-            self.discovery_status.setText("Error: Script not found")
-            return
-
-        self.log_status(f"Found script at: {script_path}")
-
-        try:
-            # Get configured music directory from config file
-            music_dir = self.get_configured_music_dir()
-            
-            # Create and start the worker thread
-            self.discovery_worker = ScriptWorker(script_path, "Music Discovery")
-
-            # Connect signals - need to ensure proper Qt connection type
-            self.discovery_worker.update_progress.connect(self.update_discovery_progress, Qt.QueuedConnection)
-            self.discovery_worker.script_finished.connect(self.discovery_finished, Qt.QueuedConnection)
-            self.discovery_worker.output_text.connect(self.log_status, Qt.QueuedConnection)
-            self.discovery_worker.console_output.connect(self.log_discovery_output, Qt.QueuedConnection)
-
-            # Add arguments for music directory and to save recommendations in music directory
-            self.discovery_worker.extra_args = ["--dir", music_dir, "--save-in-music-dir"]
-
-            # Log before starting the thread
-            self.log_status("Music Discovery thread created, starting...")
-            self.log_discovery_output(f"Starting Music Discovery process for directory: {music_dir}...")
-
-            # Start the thread
-            self.discovery_worker.start()
-
-            # Verify thread started
-            if not self.discovery_worker.isRunning():
-                raise RuntimeError("Failed to start worker thread")
-
-            self.log_status("Music Discovery thread started successfully")
-            
-        except Exception as e:
-            error_msg = f"Error launching Music Discovery: {str(e)}\n{traceback.format_exc()}"
-            self.log_status(error_msg)
-            self.log_discovery_output(f"ERROR: {str(e)}")
-            
-            # Re-enable buttons on error
-            self.discovery_button.setEnabled(True)
-            self.spotify_button.setEnabled(True)
-            self.discovery_status.setText("Error starting process")
+        # Run the actual process
+        self.run_music_discovery()
 
     def update_discovery_progress(self, value: int, status: str):
         try:
@@ -2302,97 +2448,15 @@ class SpotifyLauncher(QMainWindow):
         
         # Check if configuration exists
         if not self.is_configuration_valid():
-            self.log_status("No valid configuration found. Showing settings dialog.")
-            self.show_music_dir_dialog()
+            self.log_status("No valid configuration found. Showing options dialog.")
+            self.show_options_dialog()
             return
         
-         # Clear the last button clicked as we're proceeding normally
+        # Clear the last button clicked as we're proceeding normally
         self.last_button_clicked = None
         
-        if self.spotify_worker and self.spotify_worker.isRunning():
-            # Script is already running
-            self.log_status("Spotify Client is already running")
-            return
-                
-        # Reset UI for all progress bars - ensure they're explicitly set to 0
-        self.spotify_progress1.setValue(0)
-        self.spotify_progress2.setValue(0)
-        
-        # Clear all text labels
-        self.spotify_status1.setText("")
-        self.spotify_status2.setText("")
-        
-        # Reset phase flag
-        self.phase2_active = False
-        
-        # Disable buttons
-        self.spotify_button.setEnabled(False)
-        self.discovery_button.setEnabled(False)
-        
-        # Clear the output text
-        self.spotify_output.clear()
-        
-        # Activate the Spotify Client output tab
-        self.output_tabs.setCurrentWidget(self.spotify_output)
-                
-        # Find the script
-        spotify_script = None
-        for script_name in ["spotifyclient.py"]:
-            script_path = self.find_script(script_name)
-            if script_path:
-                spotify_script = script_path
-                self.log_status(f"Found Spotify client script: {script_name}")
-                break
-                    
-        if not spotify_script:
-            self.log_status("ERROR: Could not find any Spotify client script!")
-            self.spotify_button.setEnabled(True)
-            self.discovery_button.setEnabled(True)  # Re-enable Music Discovery button
-            return
-        
-        try:
-            # Get configured music directory from config file
-            music_dir = self.get_configured_music_dir()
-            
-            # Construct path to recommendations.json file
-            recommendations_file = os.path.join(music_dir, "recommendations.json")
-            
-            # Check if recommendations file exists
-            if not os.path.exists(recommendations_file):
-                self.log_spotify_output(f"Error: Recommendations file not found: {recommendations_file}")
-                self.log_spotify_output("Please run Music Discovery first.")
-                self.spotify_button.setEnabled(True)
-                self.discovery_button.setEnabled(True)
-                return
-                
-            # Create and start the worker thread
-            self.spotify_worker = ScriptWorker(spotify_script, "Spotify Client")
-            
-            # Connect signals
-            self.spotify_worker.update_progress.connect(self.update_spotify_progress)
-            self.spotify_worker.script_finished.connect(self.spotify_finished)
-            self.spotify_worker.output_text.connect(self.log_status)
-            self.spotify_worker.console_output.connect(self.log_spotify_output)
-            
-            # Add the recommendations file as environment variable
-            os.environ["RECOMMENDATIONS_FILE"] = recommendations_file
-            self.log_status(f"Set RECOMMENDATIONS_FILE environment variable: {recommendations_file}")
-            
-            # Start the thread
-            self.spotify_worker.start()
-            
-            # Log the start of the process
-            self.log_status("Spotify Client started")
-            self.log_spotify_output(f"Spotify Client process started using recommendations file: {recommendations_file}...")
-        
-        except Exception as e:
-            error_msg = f"Error launching Spotify Client: {str(e)}\n{traceback.format_exc()}"
-            self.log_status(error_msg)
-            self.log_spotify_output(f"ERROR: {str(e)}")
-            
-            # Re-enable buttons on error
-            self.spotify_button.setEnabled(True)
-            self.discovery_button.setEnabled(True)
+        # Run the actual process
+        self.run_spotify_client()
            
     def update_spotify_progress(self, value: int, status: str):
         """
