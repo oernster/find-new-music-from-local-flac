@@ -511,17 +511,12 @@ def main():
 
     args = parser.parse_args()
     
-    # Get music directory
-    music_dir = args.dir or browse_directory()
-    if not music_dir:
-        print("No directory selected. Exiting.")
-        return
+    # Hard-code music directory
+    music_dir = "H:\\test"
     
     # Determine output file path
-    output_file = args.output
-    if args.save_in_music_dir:
-        output_file = os.path.join(music_dir, 'recommendations.json')
-        print(f"{Fore.CYAN}Will save recommendations to music directory: {output_file}{Style.RESET_ALL}")
+    output_file = os.path.join(music_dir, 'recommendations.json')
+    print(f"{Fore.CYAN}Will save recommendations to music directory: {output_file}{Style.RESET_ALL}")
     
     # Create components
     scanner = ProgressTrackingFlacScanner(music_dir)  # Use the enhanced scanner
@@ -542,7 +537,7 @@ def main():
         print(f"Error during execution: {e}")
         import traceback
         traceback.print_exc()
-
+        
 
 if __name__ == '__main__':
     main()

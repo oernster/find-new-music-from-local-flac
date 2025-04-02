@@ -107,7 +107,7 @@ class MusicDatabase(ABC):
 class MusicBrainzAPI(MusicDatabase):
     """MusicBrainz API implementation."""
     
-    def __init__(self, user_email: str = "<insert your email here>"):
+    def __init__(self, user_email: str = "your email"):
         """
         Initialize the MusicBrainz API client.
         
@@ -122,6 +122,8 @@ class MusicBrainzAPI(MusicDatabase):
         # Keep track of consecutive failures for adaptive backoff
         self.consecutive_failures = 0
         self.current_delay = BASE_REQUEST_DELAY
+        # Track the time of the last API request to ensure rate limiting
+        self.last_request_time = 0
 
     def _make_api_request(self, url: str, params: Dict, context: str) -> Optional[Dict]:
         """
@@ -145,18 +147,34 @@ class MusicBrainzAPI(MusicDatabase):
                         readable_context = params['query'].split('artist:"')[1].split('"')[0]
                     elif 'tag:' in params['query']:
                         readable_context = params['query'].split('tag:"')[1].split('"')[0]
+                elif 'artist' in params:
+                    # For bulk lookup cases
+                    readable_context = f"{len(params['artist'].split(','))} artists"
                 
                 # Log attempt start
                 print(f"{Fore.YELLOW}Attempt {attempt + 1} of {max_retries} for {readable_context}")
                 print(f"Request URL: {url}")
-                print(f"Request Params: {params}{Style.RESET_ALL}")
+                # Prevent potential credential exposure in full params logging
+                sanitized_params = params.copy()
+                if 'artist' in sanitized_params:
+                    sanitized_params['artist'] = f"[{len(sanitized_params['artist'].split(','))} artist IDs]"
+                print(f"Request Params: {sanitized_params}{Style.RESET_ALL}")
                 
-                # Wait 6 seconds between attempts
-                print(f"{Fore.YELLOW}Pausing for 2 seconds to respect rate limit{Style.RESET_ALL}")
-                time.sleep(2)
+                # Ensure rate limiting - respect 2 seconds between API calls
+                current_time = time.time()
+                time_since_last_request = current_time - self.last_request_time
+                
+                if time_since_last_request < BASE_REQUEST_DELAY:
+                    # Only sleep for the remaining time needed to respect the 2-second limit
+                    sleep_time = BASE_REQUEST_DELAY - time_since_last_request
+                    print(f"{Fore.YELLOW}Pausing for {sleep_time:.2f} seconds to respect rate limit{Style.RESET_ALL}")
+                    time.sleep(sleep_time)
                 
                 # Make the request
                 response = requests.get(url, headers=self.headers, params=params)
+                
+                # Update the last request time
+                self.last_request_time = time.time()
                 
                 # Successful response
                 if response.status_code == 200:
@@ -168,8 +186,17 @@ class MusicBrainzAPI(MusicDatabase):
                     print(f"{Fore.RED}FAILURE: Rate limit or service unavailable (Status {response.status_code}) for {readable_context}. Retrying...{Style.RESET_ALL}")
                     continue
                 
-                # Non-retriable error
+                # Non-retriable error - add more detailed logging
                 print(f"{Fore.RED}FAILURE: HTTP Error {response.status_code} for {readable_context}: {response.text}{Style.RESET_ALL}")
+                
+                # Additional debug logging for 400 errors
+                if response.status_code == 400:
+                    print(f"{Fore.RED}Detailed 400 Error Investigation:{Style.RESET_ALL}")
+                    print(f"Request URL: {url}")
+                    print(f"Request Headers: {self.headers}")
+                    print(f"Request Params (raw): {params}")
+                    print(f"Response Body: {response.text}")
+                
                 return None
             
             except requests.exceptions.RequestException as e:
