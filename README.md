@@ -1,28 +1,30 @@
-# GenreGenius v3.1 - needs further work; please be patient.
+# GenreGenius v3.3
 - UI overhauled and added dark theme, correctly functioning colour changing progress bars, and correctly generating top tracks in playlists in _relevant_ playlist genres.  Also, 3 times faster while respecting rate limiting constraints for 3rd party APIs.
+- Now with settings automation/dialog/menu.
 
 # Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
 
-The UI/exe once generated will (Step 1) create a json file of keys from your local library directory with a list of values containing inspired artists, avoiding copycat bands etc. and ensuring that no inspired artists are the same as your source artists from your local FLAC library.  This uses the [MusicBrainz developer API](https://musicbrainz.org/).
+The UI/exe once generated will (Step 1) create a json file of keys from your local library directory with a list of values containing inspired artists, avoiding copycat bands etc. and ensuring that no inspired artists are the same as your source artists from your local music library.  This uses the [MusicBrainz developer API](https://musicbrainz.org/).
 
-NOTE: If you have a large library like me (I have around 450 CDs ripped to FLAC (Free Lossless Audio Codec; basically as good as CD), though mp3 or wav should work fine too since it uses directory names) then the script will take a while to run.
+NOTE: If you have a large library like me (I have around 450 CDs ripped to FLAC (Free Lossless Audio Codec; basically as good as CD), though mp3 or wav should work fine too since it uses directory names as the artists in subdirectories of the main music directory chosen) then the script will take a while to run.
 
-The second button will create, based on the inspired artists lists (json file), spotify playlists based on genre.
+The second button will create, based on the inspired artists lists (recommendations.json file), spotify playlists based on genre.
 
 If you want to subsequently NOT use spotify (use the free service instead) and use a decent FLAC music source or other service, then I can recommend installing [TuneMyMusic](https://www.tunemymusic.com/) to transfer your spotify playlists to your desired streaming service.  I use [Deezer](https://www.deezer.com/en/) myself.
+If you mess up and need to delete your playlists from a streaming service by bulk, then consider [Soundiiz](https://soundiiz.com/) - you can create a free account and handle that with that site.
 
 The Deezer App doesn't support API usage currently for developers so this has to be a manual step via a service like Spotify as the initial playlist generating step; hence my approach. 
 
 ### Before you start:
 
-- Rip CDs to FLAC format and store them all in one super directory with subdirectories labelled by artist name; this should be done automatically by most CD rippers.
+- Rip CDs to FLAC/other format and store them all in one super directory with subdirectories labelled by artist name; this should be done automatically by most CD rippers.
 - Create a Spotify account and go to the [spotify developer API portal](https://developer.spotify.com/documentation/web-api) and login.  Then create an app.  In settings, specify the callback as `http://127.0.0.1:8888/callback` and tick the Web API and Web Playback SDK options.  This step is necessary to associate client and secret keys with your Spotify account. 
 - Go to settings and get your spotify client id and client secret and paste them into spotifyclient.py in the class `SpotifyPlaylistManager`, method named `create_spotify_client`.
-- Create a musicbrainz account and put your email as a courtesy in the musicbrainz.py file in the `__init__` constructor method in the class `MusicBrainzAPI`.
+- Create a musicbrainz account and put your email as a courtesy (so they can contact you if you mess with their rate limiting system) in the musicbrainz.py file in the `__init__` constructor method in the class `MusicBrainzAPI`.
 
 ### Installation
 
-- Requires Windows for the selecting of directories and files in file explorer for FLAC music directory selection and json file selection after 1st step.
+- Requires Windows for the selecting music directory using a dialog.
 - Install Python 3 of some variety
 - Install git
 - Launch a terminal or powershell
@@ -38,15 +40,15 @@ The Deezer App doesn't support API usage currently for developers so this has to
 
 ## Running
 
-- Run the `PlaylistGenerator.exe` created program.
+- Run the `GenreGenius.exe` created program.
 - Choose view | Show Console Output if you want to see that before you start.
-- Hit the Step 1 button, choose your music directory and wait; watch the progress bar.
-- Hit the step 2 button, choose your recommendations.json (located in the music directory) and wait; watch the progress bar.
+- Hit the Step 1 button.
+- Hit the step 2 button.
 
 Note: Step 1 takes the longest time; step 2 also takes a little time but not so long.
 
 ## Notes for linux/mac users...
 
-- There is no UI for linux/mac users.  Comment this code and adjust to your needs if on linux/mac - specifically the windows file explorer launch windows to select a directory in the first step or a json file in the second step.
+- There is no UI for linux/mac users.  Comment this code and adjust to your needs if on linux/mac - specifically any UI oriented code.
 - You will need to run ```python musicdiscovery.py``` first.
 - You will need to run the ```python spotifyclient.py``` second.
