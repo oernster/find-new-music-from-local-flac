@@ -47,8 +47,9 @@ The Deezer App doesn't support API usage currently for developers so this has to
 
 Note: Step 1 takes the longest time; step 2 also takes a little time but not so long.
 
-## Notes for linux/mac users...
+## Additional notes for linux/mac users...
 
 - There is no UI for linux/mac users.  Comment this code and adjust to your needs if on linux/mac - specifically any UI oriented code.
+- Also, you will need to hard code the music directory location before starting; or write custom code to define it dynamically.
 - You will need to run ```python musicdiscovery.py``` first.
 - You will need to run the ```python spotifyclient.py``` second.
