@@ -1,8 +1,6 @@
-# GenreGenius v3.4
-- UI overhauled and added dark theme, correctly functioning colour changing progress bars, and correctly generating top tracks in playlists in _relevant_ playlist genres.  Also, 3 times faster while respecting rate limiting constraints for 3rd party APIs.
-- Now with settings automation/dialog/menu.
+# GenreGenius v3.5
 
-# Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
+- Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
 
 The UI/exe once generated will (Step 1) create a json file of keys from your local library directory with a list of values containing inspired artists, avoiding copycat bands etc. and ensuring that no inspired artists are the same as your source artists from your local music library.  This uses the [MusicBrainz developer API](https://musicbrainz.org/).
 

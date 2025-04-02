@@ -22,7 +22,10 @@ from PyQt5.QtWidgets import (
     QFileDialog, QCheckBox, QGroupBox
 )
 from PyQt5.QtGui import QIcon, QFont, QColor, QPalette, QPainter, QPainterPath
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QMutex, QMutexLocker, pyqtSlot, QEvent, QRect
+from PyQt5.QtCore import ( 
+    Qt, QThread, pyqtSignal, QObject, QMutex, QMutexLocker, pyqtSlot, QEvent, QRect,
+    QPropertyAnimation, QEasingCurve, pyqtProperty, QSize, QPointF, QRectF
+)
 
 
 # Thread-safe logger class to handle log operations safely
@@ -234,6 +237,110 @@ class ColourProgressBar(QProgressBar):
         
         # Force an update to ensure the UI reflects the change
         self.update()
+
+
+# Add this class to your spotifylauncher.py file, before the SpotifyLauncher class
+
+class ToggleSwitch(QCheckBox):
+    """Custom toggle switch control that looks like a modern switch."""
+    
+    def __init__(self, parent=None):
+        """Initialize the toggle switch."""
+        super().__init__(parent)
+        
+        # Set dimensions and style
+        self.setFixedSize(52, 26)
+        
+        # Remove text
+        self.setText("")
+        
+        # Set animation details
+        self.animation_duration = 120
+        self.animation = None
+        
+        # Track state for custom drawing
+        self._enabled = False
+        self._margin = 2
+        self._thumb_position = 0  # 0 for off, 1 for on (will be animated)
+        
+        # Colors
+        self.track_color_off = QColor("#4c4c4c")
+        self.track_color_on = QColor("#1DB954")  # Spotify green
+        self.thumb_color = QColor("#FFFFFF")
+        
+        # Connect state change signals
+        self.stateChanged.connect(self.on_state_changed)
+    
+    def sizeHint(self):
+        """Return the recommended size for the widget."""
+        return QSize(52, 26)
+    
+    def hitButton(self, pos):
+        """Return True if pos is within the toggle switch."""
+        return self.contentsRect().contains(pos)
+    
+    def on_state_changed(self, state):
+        """Handle state changes and trigger animation."""
+        self._enabled = state == Qt.Checked
+        
+        # Clean up existing animation
+        if self.animation and self.animation.state() == self.animation.Running:
+            self.animation.stop()
+        
+        # Create and start animation
+        self.animation = QPropertyAnimation(self, b"thumb_position")
+        self.animation.setDuration(self.animation_duration)
+        self.animation.setStartValue(0 if not self._enabled else 1)
+        self.animation.setEndValue(1 if self._enabled else 0)
+        self.animation.setEasingCurve(QEasingCurve.InOutExpo)
+        self.animation.start()
+    
+    def get_thumb_position(self):
+        """Getter for thumb position property."""
+        return self._thumb_position
+    
+    def set_thumb_position(self, position):
+        """Setter for thumb position property with animation."""
+        self._thumb_position = position
+        self.update()
+    
+    # Define property for animation
+    thumb_position = pyqtProperty(float, get_thumb_position, set_thumb_position)
+    
+    def paintEvent(self, event):
+        """Custom paint event to draw the toggle switch."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Calculate rect and radius
+        rect = self.rect()
+        thumb_radius = (rect.height() - 2 * self._margin) / 2
+        track_radius = rect.height() / 2
+        
+        # Calculate thumb position
+        thumb_x = self._margin + self._thumb_position * (rect.width() - 2 * self._margin - 2 * thumb_radius)
+        
+        # Draw the track with appropriate color based on state and animation
+        if self._enabled:
+            track_color = self.track_color_on
+        else:
+            track_color = self.track_color_off
+            
+        # Create track path
+        track_path = QPainterPath()
+        track_path.addRoundedRect(QRectF(0, 0, rect.width(), rect.height()), track_radius, track_radius)
+        
+        # Fill track
+        painter.fillPath(track_path, track_color)
+        
+        # Draw thumb
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self.thumb_color)
+        painter.drawEllipse(
+            QPointF(thumb_x + thumb_radius, rect.height() / 2),
+            thumb_radius,
+            thumb_radius
+        )
 
 
 class ScriptWorker(QThread):
@@ -1524,20 +1631,20 @@ class SpotifyLauncher(QMainWindow):
         view_options_group = QGroupBox("View Options")
         view_options_layout = QVBoxLayout()
         
-        # Debug Tab Toggle
+        # Debug Tab Toggle using custom toggle switch
         debug_toggle_layout = QHBoxLayout()
         debug_label = QLabel("Show Debug Tab")
-        debug_toggle = QCheckBox()
+        debug_toggle = ToggleSwitch()
         debug_toggle.setChecked(self.toggle_debug_action.isChecked())
         debug_toggle_layout.addWidget(debug_label)
         debug_toggle_layout.addStretch()
         debug_toggle_layout.addWidget(debug_toggle)
         view_options_layout.addLayout(debug_toggle_layout)
         
-        # Console Output Toggle
+        # Console Output Toggle using custom toggle switch
         console_toggle_layout = QHBoxLayout()
         console_label = QLabel("Show Console Output")
-        console_toggle = QCheckBox()
+        console_toggle = ToggleSwitch()
         console_toggle.setChecked(self.toggle_console_action.isChecked())
         console_toggle_layout.addWidget(console_label)
         console_toggle_layout.addStretch()
@@ -1647,7 +1754,7 @@ class SpotifyLauncher(QMainWindow):
         
         # Show the dialog
         dialog.exec_()
-
+    
     def save_options(self, dialog, music_dir, debug_tab_enabled, console_output_enabled):
         """
         Save options from the Options dialog.
@@ -1997,7 +2104,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius v3.4
+    GenreGenius v3.5
     By Oliver Ernster
 
     A tool for discovering music and generating
