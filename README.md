@@ -1,4 +1,4 @@
-# GenreGenius v3.5
+# GenreGenius v3.5.2
 
 - Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
 

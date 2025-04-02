@@ -1238,6 +1238,68 @@ class SpotifyLauncher(QMainWindow):
         if directory:
             input_field.setText(directory)
 
+    def apply_dark_theme_to_titlebar(self):
+        """Apply dark theme to the window title bar with light text."""
+        try:
+            # Define Windows API constants
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20   # Immersive dark mode for title bar
+            DWMWA_CAPTION_COLOR = 35             # DWM caption color attribute
+            DWMWA_TEXT_COLOR = 36                # DWM caption text color attribute
+            
+            # Dark title bar color (#121212) in COLORREF format
+            dark_title_color = 0x00121212
+            
+            # Light text color (white #FFFFFF) in COLORREF format
+            light_text_color = 0x00FFFFFF
+            
+            # Get the window handle
+            hWnd = int(self.winId())
+            
+            # First try setting immersive dark mode (Windows 10 1809+)
+            try:
+                immersive_dark_mode = c_int(1)  # TRUE
+                windll.dwmapi.DwmSetWindowAttribute(
+                    hWnd,
+                    DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    byref(immersive_dark_mode),
+                    sizeof(c_int)
+                )
+                self.log_status("Applied immersive dark mode to Windows title bar")
+            except Exception as e:
+                # If immersive dark mode fails, use the color attributes as fallback
+                self.log_status(f"Immersive dark mode not available: {str(e)}. Falling back to caption color.")
+            
+            # Apply the dark color to the title bar
+            windll.dwmapi.DwmSetWindowAttribute(
+                hWnd,
+                DWMWA_CAPTION_COLOR,
+                byref(c_int(dark_title_color)),
+                sizeof(c_int)
+            )
+            
+            # Apply the light text color to the title bar
+            windll.dwmapi.DwmSetWindowAttribute(
+                hWnd,
+                DWMWA_TEXT_COLOR,
+                byref(c_int(light_text_color)),
+                sizeof(c_int)
+            )
+            
+            self.log_status("Applied dark theme to Windows title bar")
+        except Exception as e:
+            self.log_status(f"Error setting Windows title bar color: {str(e)}")
+            # Fallback method
+            try:
+                self.setStyleSheet(self.styleSheet() + """
+                    QMainWindow::title {
+                        background-color: #121212;
+                        color: white;
+                    }
+                """)
+                self.log_status("Applied fallback dark title styling")
+            except Exception as e:
+                self.log_status(f"Error in fallback title styling: {str(e)}")
+
     def apply_dark_style_to_message_box(self, message_box):
         """
         Apply dark mode styling to a QMessageBox.
@@ -1311,8 +1373,9 @@ class SpotifyLauncher(QMainWindow):
         try:
             if sys.platform == 'win32':
                 # Define Windows API constants
-                DWMWA_CAPTION_COLOR = 35  # DWM caption color attribute
-                DWMWA_TEXT_COLOR = 36     # DWM caption text color attribute
+                DWMWA_USE_IMMERSIVE_DARK_MODE = 20   # Immersive dark mode for title bar
+                DWMWA_CAPTION_COLOR = 35             # DWM caption color attribute
+                DWMWA_TEXT_COLOR = 36                # DWM caption text color attribute
                 
                 # Dark title bar color (#121212) in COLORREF format
                 dark_title_color = 0x00121212
@@ -1321,11 +1384,24 @@ class SpotifyLauncher(QMainWindow):
                 light_text_color = 0x00FFFFFF
                 
                 # Get the window handle
-                hWnd = message_box.winId()
+                hWnd = int(message_box.winId())
                 
+                # First try setting immersive dark mode (Windows 10 1809+)
+                try:
+                    immersive_dark_mode = c_int(1)  # TRUE
+                    windll.dwmapi.DwmSetWindowAttribute(
+                        hWnd,
+                        DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        byref(immersive_dark_mode),
+                        sizeof(c_int)
+                    )
+                except Exception as e:
+                    # If immersive dark mode fails, use the color attributes as fallback
+                    pass
+                    
                 # Apply the dark color to the title bar
                 windll.dwmapi.DwmSetWindowAttribute(
-                    int(hWnd),
+                    hWnd,
                     DWMWA_CAPTION_COLOR,
                     byref(c_int(dark_title_color)),
                     sizeof(c_int)
@@ -1333,7 +1409,7 @@ class SpotifyLauncher(QMainWindow):
                 
                 # Apply the light text color to the title bar
                 windll.dwmapi.DwmSetWindowAttribute(
-                    int(hWnd),
+                    hWnd,
                     DWMWA_TEXT_COLOR,
                     byref(c_int(light_text_color)),
                     sizeof(c_int)
@@ -1341,6 +1417,12 @@ class SpotifyLauncher(QMainWindow):
         except Exception as e:
             print(f"Error setting title bar color: {e}")
             # Fallback method if needed
+            message_box.setStyleSheet(message_box.styleSheet() + f"""
+                QDialog::title {{
+                    background-color: {dark_bg};
+                    color: {text_color};
+                }}
+            """)
 
     def launch_music_discovery(self):
         """Launch the Music Discovery script with progress tracking."""
@@ -2104,7 +2186,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius v3.5
+    GenreGenius v3.5.2
     By Oliver Ernster
 
     A tool for discovering music and generating
@@ -2138,36 +2220,9 @@ class SpotifyLauncher(QMainWindow):
             self.log_status(f"Error setting about dialog icon: {str(e)}")
         
         # Apply dark theme styling to the dialog
-        dark_bg = "#121212"           # Dark background
-        text_color = "#E0E0E0"        # Light text
-        spotify_green = "#1DB954"     # Spotify green
+        self.apply_dark_style_to_message_box(about_dialog)
         
-        # Style the about dialog
-        about_dialog.setStyleSheet(f"""
-            QMessageBox {{
-                background-color: {dark_bg};
-                color: {text_color};
-            }}
-            QLabel {{
-                color: {text_color};
-                font-size: 12px;
-            }}
-            QPushButton {{
-                background-color: {spotify_green};
-                color: white;
-                border-radius: 4px;
-                padding: 6px 12px;
-                font-weight: bold;
-                border: none;
-            }}
-            QPushButton:hover {{
-                background-color: #1ED760;
-            }}
-            QPushButton:pressed {{
-                background-color: #169C46;
-            }}
-        """)
-        
+        # Show the dialog
         about_dialog.exec_()
 
     def load_set_icon(self):
