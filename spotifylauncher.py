@@ -1956,32 +1956,35 @@ class SpotifyLauncher(QMainWindow):
             self.apply_dark_style_to_message_box(error_dialog)
             error_dialog.exec_()
             return
-        
+
+        # Normalize to use backslashes (Windows-style)
+        normalized_music_dir = music_dir.replace('/', '\\')
+
         # Save the directory path to a config file
         config_path = os.path.join(self.get_base_dir(), "config.json")
         config = {
-            "music_directory": music_dir,
+            "music_directory": normalized_music_dir,
             "debug_tab_enabled": debug_tab_enabled,
             "console_output_enabled": console_output_enabled
         }
-        
+
         try:
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
-            
+
             # Update view settings
             if debug_tab_enabled != self.toggle_debug_action.isChecked():
                 self.toggle_debug_action.setChecked(debug_tab_enabled)
                 self.safe_toggle_debug_tab(debug_tab_enabled)
-            
+
             if console_output_enabled != self.toggle_console_action.isChecked():
                 self.toggle_console_action.setChecked(console_output_enabled)
                 self.safe_toggle_console_output(console_output_enabled)
-            
+
             # Close the dialog
             dialog.accept()
-            
-            # Check if we should resume a specific operation
+
+            # Resume appropriate operation
             if self.last_button_clicked == 'discovery':
                 self.log_status("Resuming Music Discovery operation after configuration")
                 self.run_music_discovery()
@@ -1996,7 +1999,7 @@ class SpotifyLauncher(QMainWindow):
                 confirm_dialog.setIcon(QMessageBox.Information)
                 self.apply_dark_style_to_message_box(confirm_dialog)
                 confirm_dialog.exec_()
-            
+
         except Exception as e:
             error_dialog = QMessageBox(self)
             error_dialog.setWindowTitle("Error")
@@ -2004,6 +2007,7 @@ class SpotifyLauncher(QMainWindow):
             error_dialog.setIcon(QMessageBox.Critical)
             self.apply_dark_style_to_message_box(error_dialog)
             error_dialog.exec_()
+
 
     def setup_menu(self):
         """Set up the menu bar with options."""
@@ -2286,7 +2290,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius v3.6.1
+    GenreGenius v3.7
     By Oliver Ernster
 
     A tool for discovering music and generating

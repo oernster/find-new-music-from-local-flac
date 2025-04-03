@@ -24,6 +24,78 @@ from colorama import init, Fore, Style
 from musicbrainz import MusicBrainzAPI, normalize_artist_name
 
 
+def get_config_path(filename: str = "config.json") -> str:
+    """Get the absolute path to a config or data file, using the EXE location if frozen."""
+    if getattr(sys, 'frozen', False):  # Running as PyInstaller bundle
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, filename)
+
+def get_executable_directory() -> str:
+    """
+    Returns the directory of the running script or EXE.
+    """
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+def load_config() -> dict:
+    """
+    Loads config.json from the executable directory.
+    """
+    config_path = os.path.join(get_executable_directory(), "config.json")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"config.json not found at: {config_path}")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def get_recommendations_path_from_config() -> str:
+    """
+    Builds the full path to recommendations.json using multiple strategies:
+    1. Check environment variable
+    2. Use music_directory from config.json
+    3. Fallback to executable directory
+    """
+    # First, check if recommendations file path is passed via environment variable
+    env_recommendations_file = os.environ.get("RECOMMENDATIONS_FILE")
+    if env_recommendations_file and os.path.exists(env_recommendations_file):
+        logging.info(f"Using recommendations file from environment variable: {env_recommendations_file}")
+        return env_recommendations_file
+
+    # If no environment variable, fall back to config method
+    try:
+        config = load_config()
+        music_dir = config.get("music_directory")
+        if not music_dir:
+            raise ValueError("music_directory not set in config.json")
+        
+        recommendations_path = os.path.join(music_dir, "recommendations.json")
+        
+        if not os.path.exists(recommendations_path):
+            raise FileNotFoundError(f"Recommendations file not found at: {recommendations_path}")
+        
+        logging.info(f"Using recommendations file from config: {recommendations_path}")
+        return recommendations_path
+    
+    except Exception as config_error:
+        logging.error(f"Error getting recommendations path from config: {config_error}")
+        
+        # Final fallback: check in the executable/script directory
+        fallback_path = os.path.join(get_executable_directory(), "recommendations.json")
+        
+        if os.path.exists(fallback_path):
+            logging.info(f"Using fallback recommendations file: {fallback_path}")
+            return fallback_path
+        
+        # If all methods fail, raise a comprehensive error
+        raise FileNotFoundError(
+            "Could not locate recommendations.json. " 
+            "Please ensure the file exists in the music directory or current directory."
+        )
+
+
 # Fix console encoding issues on Windows
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -164,24 +236,34 @@ class SpotifyPlaylistManager:
 
     def select_json_file(self) -> str:
         """
-        Get recommendations file path from environment variable or use the file dialog.
-        
-        Returns:
-            str: Selected file path or empty string if canceled
+        Construct the full path to 'recommendations.json' inside the music directory
+        defined in config.json. Use get_config_path() to locate config.json.
         """
-        # Check if file path is provided in environment variable
-        env_file_path = os.environ.get("RECOMMENDATIONS_FILE")
-        if env_file_path and os.path.exists(env_file_path):
-            logging.info(f"Using recommendations file from environment variable: {env_file_path}")
-            return env_file_path
-        
-        # Otherwise, use the file dialog (fallback)
-        logging.info("Please select the source JSON file.")
-        root = Tk()
-        root.withdraw()
-        file_path = askopenfilename(filetypes=[("JSON files", "*.json")])
-        root.destroy()
-        return file_path
+        try:
+            # Use get_config_path to locate the config file
+            config_path = get_config_path("config.json")
+            
+            if not os.path.exists(config_path):
+                raise FileNotFoundError(f"config.json not found at: {config_path}")
+
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+
+            music_dir = config.get("music_directory")
+            if not music_dir or not os.path.exists(music_dir):
+                raise ValueError(f"Invalid or missing 'music_directory' in config.json: {music_dir}")
+
+            recommendations_path = os.path.join(music_dir, "recommendations.json")
+
+            if not os.path.exists(recommendations_path):
+                raise FileNotFoundError(f"{recommendations_path} not found")
+
+            logging.info(f"Using recommendations file: {recommendations_path}")
+            return recommendations_path
+
+        except Exception as e:
+            logging.error(f"Critical error loading recommendations: {e}")
+            raise
 
     def normalize_genres(self, genres: List[str]) -> List[str]:
         """
@@ -313,9 +395,11 @@ class SpotifyPlaylistManager:
                 artist_words = set(artist_name.lower().split())
                 result_words = set(artist['name'].lower().split())
                 
-                # If less than half the words match, it's probably not the right artist
-                if len(artist_words.intersection(result_words)) < len(artist_words) / 2:
+                # Accept if there's at least one common word
+                if len(artist_words.intersection(result_words)) == 0:
+                    logging.warning(f"Fuzzy match weak for '{artist_name}' → '{artist['name']}', skipping.")
                     return []
+
             
             # Get the artist's genres
             genres = artist.get('genres', [])
@@ -459,8 +543,10 @@ class SpotifyPlaylistManager:
         for artist, (primary_genre, _) in final_results.items():
             genre_distribution[primary_genre] = genre_distribution.get(primary_genre, 0) + 1
         
+        logging.info("Genre Lookup Summary:")
         for genre, count in sorted(genre_distribution.items(), key=lambda x: x[1], reverse=True):
             logging.info(f"  {genre}: {count} artists")
+
         
         return final_results
 
@@ -1421,275 +1507,308 @@ class SpotifyPlaylistManager:
             # For single word genres, just capitalize
             return genre.capitalize()
 
-    def generate_playlists_by_genre(self, genre_artists: Dict[str, List[str]]) -> None:
+    def get_next_playlist_number(self, genre, user_id):
         """
-        Generate playlists by genre from artist recommendations.
-        - Creates more specific genre playlists to increase total number
-        - Ensures better distribution of artists across genre categories
-        - Lowers minimum thresholds for playlist creation
+        Get the next available playlist number for a genre by checking existing playlists.
         
         Args:
-            genre_artists (Dict[str, List[str]]): Dictionary mapping genres to artists
+            genre (str): Genre name to check
+            user_id (str): Spotify user ID
+            
+        Returns:
+            int: Next available playlist number (starts at 1)
         """
-        genre_mapping = {
-            # Electronic music family - expanded
-            "ambient trance": "Electronic - Trance",
-            "alternative dance": "Electronic - Dance",
-            "dance": "Electronic - Dance",
-            "trance": "Electronic - Trance",
-            "progressive trance": "Electronic - Trance",
-            "progressive house": "Electronic - House",
-            "house": "Electronic - House",
-            "techno": "Electronic - Techno",
-            "edm": "Electronic - Dance",
-            "electronica": "Electronic",
-            "electronic": "Electronic",
-            "electro house": "Electronic - House",
-            "drum and bass": "Electronic - Drum & Bass",
-            "dubstep": "Electronic - Bass",
-            "ambient": "Electronic - Ambient",
-            "idm": "Electronic - IDM",
-            "downtempo": "Electronic - Downtempo",
+        try:
+            # Get all user's playlists
+            playlists = []
+            offset = 0
+            limit = 50
             
-            # Rock music family - expanded
-            "aor": "Rock - Classic",
-            "arena rock": "Rock - Classic",
-            "classic rock": "Rock - Classic",
-            "hard rock": "Rock - Hard Rock",
-            "blues rock": "Rock - Blues Rock",
-            "rock": "Rock",
-            "rock and roll": "Rock & Roll",
-            "alternative rock": "Rock - Alternative",
-            "indie rock": "Rock - Indie",
-            "pop rock": "Rock - Pop Rock",
-            "progressive rock": "Rock - Progressive",
-            "psychedelic rock": "Rock - Psychedelic",
-            "metal": "Metal",
-            "heavy metal": "Metal - Heavy",
-            "glam metal": "Metal - Glam",
-            "grunge": "Rock - Grunge",
-            "punk": "Punk",
-            "punk rock": "Punk Rock",
-            "post-punk": "Rock - Post-Punk",
-            "garage": "Rock - Garage",
+            # Paginate through all playlists
+            while True:
+                results = self.retry_on_rate_limit(
+                    self.sp.user_playlists,
+                    user_id,
+                    limit=limit,
+                    offset=offset
+                )
+                
+                if not results or not results['items']:
+                    break
+                    
+                playlists.extend(results['items'])
+                
+                if len(results['items']) < limit:
+                    break
+                    
+                offset += limit
+                
+            # Find highest existing number for this genre
+            highest_number = 0
+            pattern = re.compile(rf"{re.escape(genre)} #(\d+)")
             
-            # Pop music family - expanded
-            "art pop": "Pop - Art",
-            "alternative pop": "Pop - Alternative",
-            "dance-pop": "Pop - Dance",
-            "synth-pop": "Pop - Synth",
-            "electropop": "Pop - Electronic",
-            "pop": "Pop",
-            "contemporary r&b": "R&B - Contemporary",
-            "r&b": "R&B",
-            "europop": "Pop - European",
-            "bubblegum pop": "Pop",
+            for playlist in playlists:
+                name = playlist['name']
+                match = pattern.match(name)
+                if match:
+                    number = int(match.group(1))
+                    highest_number = max(highest_number, number)
+                    
+            # Return next available number
+            return highest_number + 1
             
-            # Folk/Country music family - expanded
-            "americana": "Folk & Americana",
-            "folk": "Folk",
-            "country": "Country",
-            "country pop": "Country - Pop",
-            "bluegrass": "Folk - Bluegrass",
-            "singer-songwriter": "Singer-Songwriter",
-            "traditional folk": "Folk - Traditional",
-            
-            # Jazz and Blues family - expanded
-            "blues": "Blues",
-            "jazz": "Jazz",
-            "bebop": "Jazz - Bebop",
-            "fusion": "Jazz - Fusion",
-            "smooth jazz": "Jazz - Smooth",
-            "swing": "Jazz - Swing",
-            "big band": "Jazz - Big Band",
-            "soul": "Soul",
-            "funk": "Funk",
-            "gospel": "Gospel",
-            
-            # Hip Hop family - expanded
-            "hip hop": "Hip Hop",
-            "rap": "Hip Hop",
-            "trap": "Hip Hop - Trap",
-            "urban": "Urban",
-            "conscious hip hop": "Hip Hop - Conscious",
-            "gangsta rap": "Hip Hop - Gangsta",
-            "old school hip hop": "Hip Hop - Old School",
-            
-            # Classical music family - new
-            "classical": "Classical",
-            "baroque": "Classical - Baroque",
-            "romantic": "Classical - Romantic",
-            "symphony": "Classical - Orchestral",
-            "opera": "Classical - Opera",
-            "chamber music": "Classical - Chamber",
-            "contemporary classical": "Classical - Contemporary",
-            "orchestral": "Classical - Orchestral",
-            "piano": "Classical - Piano",
-            
-            # World music family - new
-            "world": "World",
-            "reggae": "Reggae",
-            "latin": "Latin",
-            "afrobeat": "World - Afrobeat",
-            "bossa nova": "Latin - Bossa Nova",
-            "flamenco": "World - Flamenco",
-            "salsa": "Latin - Salsa",
-            "traditional": "World - Traditional",
-            "celtic": "World - Celtic",
-            
-            # Other specific genres that shouldn't be "Other"
-            "new wave": "New Wave",
-            "disco": "Disco",
-            "synthwave": "Synthwave",
-            "experimental": "Experimental",
-            "indie": "Indie",
-            "indie pop": "Indie Pop",
-            "alternative": "Alternative",
-            "soundtrack": "Soundtrack",
-            "instrumental": "Instrumental",
-            "lounge": "Lounge",
-            "chillout": "Chillout",
-            "vocal": "Vocal",
-            "composer": "Classical - Composer"
+        except Exception as e:
+            logging.error(f"Error finding next playlist number: {e}")
+            # Default to #1 if we can't determine
+            return 1
+
+    def generate_playlists_by_genre(self, genre_artists: Dict[str, List[str]]) -> None:
+        """
+        Generate genre-based playlists with artist diversity and genre consolidation.
+        
+        Ensures:
+        - No artist appears in multiple playlists
+        - Diverse artist representation
+        - Genre consolidation
+        - Exclusion of source artists
+        - Proper playlist numbering
+        - Combines tracks into single playlist when total is less than 100
+        """
+        # Load source artists to exclude
+        try:
+            recommendations_path = get_recommendations_path_from_config()
+            with open(recommendations_path, 'r', encoding='utf-8') as f:
+                recommendations_data = json.load(f)
+                source_artists = set(recommendations_data.keys())
+        except Exception as e:
+            logging.error(f"Error reading recommendations file: {e}")
+            source_artists = set()
+
+        # Genre consolidation mapping remains the same as in previous implementation
+        genre_consolidation_map = {
+            'Rock': [
+                'Rock', 'Alternative Rock', 'Hard Rock', 'Classic Rock', 'Indie Rock', 
+                'Progressive Rock', 'Psychedelic Rock', 'Blues Rock', 'Folk Rock', 
+                'Art Rock', 'Garage Rock', 'Punk Rock', 'Metal', 'Alternative Metal',
+                'Grunge', 'Post-punk', 'Heavy Metal', 'Acid Rock', 'Experimental Rock'
+            ],
+            'Pop': [
+                'Pop', 'Indie Pop', 'Synth-pop', 'Dance-pop', 'Alternative Pop', 
+                'Art Pop', 'Electropop', 'Pop Rock', 'Baroque Pop', 'Sophisti-pop'
+            ],
+            'Electronic': [
+                'Electronic', 'House', 'Techno', 'Trance', 'Ambient', 'Dance', 
+                'Drum & Bass', 'Trip Hop', 'Downtempo', 'Electro', 'Breakbeat'
+            ],
+            'Hip Hop': [
+                'Hip Hop', 'Rap', 'Trap', 'Alternative Hip Hop', 'Conscious Hip Hop'
+            ],
+            'R&B & Soul': [
+                'R&B', 'Soul', 'Neo Soul', 'Contemporary R&B', 'Funk', 
+                'Pop Soul', 'Smooth Soul', 'Motown'
+            ],
+            'Jazz': [
+                'Jazz', 'Jazz Pop', 'Smooth Jazz', 'Fusion Jazz', 
+                'Bebop', 'Vocal Jazz', 'Contemporary Jazz'
+            ],
+            'Folk & Country': [
+                'Folk', 'Country', 'Americana', 'Singer-songwriter', 
+                'Bluegrass', 'Contemporary Folk', 'Folk Rock'
+            ],
+            'World': [
+                'World', 'Latin', 'Reggae', 'Afrobeat', 'Celtic', 
+                'Traditional', 'Bossa Nova', 'Salsa'
+            ],
+            'Classical': [
+                'Classical', 'Orchestral', 'Chamber Music', 
+                'Baroque', 'Contemporary Classical', 'Piano'
+            ]
         }
-        
-        # Create a new dictionary with general genre categories
-        general_genre_artists = defaultdict(list)
-        
-        # Split large genres into subgenres for more playlists
-        for specific_genre, artists in genre_artists.items():
-            # Convert to lowercase for matching
-            specific_genre_lower = specific_genre.lower()
+
+        # Reverse consolidation map for genre lookups
+        reverse_consolidation_map = {}
+        for primary_genre, subgenres in genre_consolidation_map.items():
+            for genre in subgenres:
+                reverse_consolidation_map[genre] = primary_genre
+
+        # Track artists used across all playlists to ensure diversity
+        used_artists = set()
+
+        # Track playlist creation results
+        playlist_targets = {}
+
+        # Get user ID once for playlist number checking
+        user_id = self.sp.me()['id']
+
+        # Process artists by genre
+        def process_genre_artists(genre, all_artists):
+            """
+            Process artists for a specific genre, ensuring diversity.
             
-            # Look up the general category
-            general_genre = genre_mapping.get(specific_genre_lower)
-            if not general_genre:
-                # If not found in mapping, try to intelligently classify it
-                general_genre = self.classify_unmapped_genre(specific_genre)
+            Args:
+                genre (str): Genre to process
+                all_artists (List[str]): List of artists in the genre
             
-            # Add artists to the general genre
-            general_genre_artists[general_genre].extend(artists)
+            Returns:
+                Dict[str, List[str]]: Mapping of artists to their track URIs
+            """
+            # Filter out source and previously used artists
+            available_artists = [
+                artist for artist in all_artists 
+                if artist not in source_artists and artist not in used_artists
+            ]
+
+            # Randomize artist order for variety
+            random.shuffle(available_artists)
+
+            # Track found artists and their tracks
+            artist_track_mapping = {}
+
+            # Process all available artists for a more complete playlist
+            artist_count = 0
+            max_artists = min(30, len(available_artists))  # Increase max artists to 30 for better playlists
             
-            # For larger genres (more than 40 artists), create additional sub-playlists
-            if len(artists) > 40:
-                # Create a more specific subgenre
-                subgenre = f"{general_genre} - Selected"
-                # Take top 30 artists (can be sorted by popularity if available)
-                general_genre_artists[subgenre] = artists[:30]
-                
-                # For even larger genres, create multiple sub-playlists
-                if len(artists) > 80:
-                    subgenre2 = f"{general_genre} - Essentials"
-                    general_genre_artists[subgenre2] = artists[30:60]
+            logging.info(f"Processing up to {max_artists} artists for genre: {genre}")
+
+            for artist in available_artists:
+                # Stop if we've processed enough artists
+                if artist_count >= max_artists:
+                    break
+
+                try:
+                    # Search for artist on Spotify
+                    results = self.sp.search(q=f'artist:"{artist}"', type='artist', limit=1)
+                    items = results.get('artists', {}).get('items', [])
                     
-                if len(artists) > 120:
-                    subgenre3 = f"{general_genre} - Discover"
-                    general_genre_artists[subgenre3] = artists[60:90]
-            
-            # Log the mapping
-            logging.info(f"Mapped '{specific_genre}' to general category '{general_genre}'")
-        
-        # Remove duplicates in each general category
-        for genre, artists in general_genre_artists.items():
-            general_genre_artists[genre] = list(dict.fromkeys(artists))
-            logging.info(f"General category '{genre}' has {len(general_genre_artists[genre])} unique artists")
-        
-        # Now process with the general categories
-        all_playlists = defaultdict(list)
-        
-        # Reset counters for playlist generation phase
-        self.total_to_process = sum(len(artists) for artists in general_genre_artists.values())
-        self.processed_count = 0
-                
-        # Process all artists by general genre
-        for genre, artists in general_genre_artists.items():
-            logging.info(f"Processing artists in genre: {genre}")
-            
-            # Track all artist tracks separately before merging to allow better randomization
-            artist_track_mapping = {}  
-            total_tracks_found = 0
-            on_genre_tracks = 0
-            
-            for artist in artists:
-                logging.info(f"Organizing tracks for artist: {artist}")
-                
-                # Get tracks with genre matching - use the general genre
-                track_matches = self.organise_artist_tracks(artist, genre)
-                
-                if track_matches:
-                    # Get just the track IDs from matches
-                    track_ids = [track_id for track_id, _ in track_matches]
-                    total_tracks_found += len(track_ids)
+                    if not items:
+                        logging.warning(f"No Spotify artist found for '{artist}'")
+                        continue
+
+                    artist_id = items[0]['id']
+                    top_tracks = self.sp.artist_top_tracks(artist_id, country='US').get('tracks', [])
                     
-                    # Count tracks with good genre match (score >= 0.7)
-                    good_matches = sum(1 for _, score in track_matches if score >= 0.7)
-                    on_genre_tracks += good_matches
+                    # Take up to 5 top tracks from each artist
+                    num_tracks = min(5, len(top_tracks))
+                    if num_tracks == 0:
+                        logging.warning(f"No tracks found for artist '{artist}'")
+                        continue
+                        
+                    uris = [track['uri'] for track in top_tracks[:num_tracks]]
                     
-                    # Store tracks by artist
-                    artist_track_mapping[artist] = track_ids
-                
-                # Update progress
-                self.processed_count += 1
-                progress_percent = (self.processed_count / self.total_to_process) * 100
-                logging.info(f"Progress: {progress_percent:.1f}% ({self.processed_count}/{self.total_to_process} artists)")
+                    # Store tracks and mark artist as used
+                    if uris:
+                        artist_track_mapping[artist] = uris
+                        used_artists.add(artist)
+                        artist_count += 1
+                        logging.info(f"Added {len(uris)} track(s) from {artist} ({artist_count}/{max_artists})")
+
+                    time.sleep(self.request_delay)
+
+                except Exception as e:
+                    logging.error(f"Failed to process artist '{artist}': {e}")
+
+            return artist_track_mapping
+
+        # Process genres in order of size
+        sorted_genres = sorted(
+            [(primary_genre, consolidated_artists) 
+             for primary_genre, consolidated_artists in 
+             [(reverse_consolidation_map.get(genre, genre), artists) 
+              for genre, artists in genre_artists.items()]],
+            key=lambda x: len(x[1]),
+            reverse=True
+        )
+
+        # Generate playlists for each genre
+        for genre, genre_specific_artists in sorted_genres:
+            logging.info(f"Processing genre: {genre} with {len(genre_specific_artists)} artists")
             
-            # Log genre match stats
-            if total_tracks_found > 0:
-                match_percent = (on_genre_tracks / total_tracks_found) * 100
-                logging.info(f"Genre '{genre}' track statistics:")
-                logging.info(f"  - Total tracks: {total_tracks_found}")
-                logging.info(f"  - Strong genre matches: {on_genre_tracks} ({match_percent:.1f}%)")
+            # Get tracks for this genre
+            artist_track_mapping = process_genre_artists(genre, genre_specific_artists)
+
+            # Skip if no tracks found
+            if not artist_track_mapping:
+                logging.warning(f"No tracks found for genre: {genre}")
+                continue
+
+            # Create balanced playlist
+            balanced_tracks = self.create_balanced_playlist(artist_track_mapping)
+            total_tracks = len(balanced_tracks)
             
-            # Lower minimum threshold for playlist creation to 12 tracks
-            if total_tracks_found >= 12:
-                # Create an intelligently randomized track list
-                genre_tracks = self.create_balanced_playlist(artist_track_mapping)
-                
-                logging.info(f"Created balanced playlist with {len(genre_tracks)} tracks for genre '{genre}'")
-                
-                # Use genre name for playlist
-                playlist_name = f"{genre} Mix"
-                
-                # For playlists with more than 100 tracks, split into multiple playlists
-                if len(genre_tracks) > 100:
-                    # Add up to 100 tracks per playlist
-                    all_playlists[playlist_name] = genre_tracks[:100]
-                    
-                    # Handle additional playlists if we have a lot of tracks
-                    chunks = [genre_tracks[i:i+100] for i in range(100, len(genre_tracks), 100)]
-                    for i, chunk in enumerate(chunks, 1):
-                        if len(chunk) >= 12:  # Lowered threshold for additional playlists
-                            all_playlists[f"{genre} Mix {i+1}"] = chunk
-                else:
-                    # For smaller playlists, use all available tracks
-                    all_playlists[playlist_name] = genre_tracks
-                    
-            elif total_tracks_found >= 8:  # Even lower threshold for sampler playlists
-                # For smaller collections between 8-11 tracks, create a "Sampler" playlist
-                logging.info(f"Creating sampler playlist with {total_tracks_found} tracks for genre '{genre}'")
-                
-                # Create balanced playlist with what we have
-                genre_tracks = self.create_balanced_playlist(artist_track_mapping)
-                playlist_name = f"{genre} Sampler"
-                all_playlists[playlist_name] = genre_tracks
+            logging.info(f"Found {total_tracks} tracks for genre '{genre}' from {len(artist_track_mapping)} artists")
+
+            # Determine playlist count - IMPROVED LOGIC
+            # Keep all tracks in a single playlist if less than 100 tracks
+            # Only split if we have more than 100 tracks
+            if total_tracks <= 100:
+                num_playlists = 1
+                logging.info(f"Creating a single playlist for {total_tracks} tracks in genre '{genre}'")
             else:
-                logging.warning(f"Not enough tracks for genre '{genre}' (found {total_tracks_found}, need at least 8)")
+                # Calculate how many playlists we need, each with around 80-100 tracks
+                num_playlists = (total_tracks + 79) // 80
+                logging.info(f"Creating {num_playlists} playlists for {total_tracks} tracks in genre '{genre}'")
 
-        # Debug summary
-        logging.info(f"Processed {self.processed_count} artists")
-        logging.info(f"Total playlists to create: {len(all_playlists)}")
-        for name, tracks in all_playlists.items():
-            logging.info(f"Playlist '{name}': {len(tracks)} tracks")
+            # Get the next available playlist number for this genre
+            next_number = self.get_next_playlist_number(genre, user_id)
+            
+            # Create playlists
+            for i in range(num_playlists):
+                # Distribute tracks evenly across playlists
+                if num_playlists == 1:
+                    # Single playlist - use all tracks
+                    playlist_tracks = balanced_tracks
+                else:
+                    # Multiple playlists - split tracks evenly
+                    tracks_per_playlist = total_tracks // num_playlists
+                    start_index = i * tracks_per_playlist
+                    end_index = (i + 1) * tracks_per_playlist if i < num_playlists - 1 else total_tracks
+                    playlist_tracks = balanced_tracks[start_index:end_index]
 
-        # Ensure progress shows completion
-        logging.info(f"Progress: 100% (Generation phase complete)")
-        
-        if not all_playlists:
-            logging.warning("No tracks were found for any artists")
-            return
-                
-        # Create the playlists in Spotify
-        self.create_playlists_in_spotify(all_playlists)
+                # Playlist name with proper numbering
+                playlist_name = f"{genre} #{next_number + i}"
+
+                try:
+                    # Create playlist
+                    playlist = self.sp.user_playlist_create(
+                        user=user_id,
+                        name=playlist_name,
+                        public=True,
+                        description=f"Top tracks from {len(artist_track_mapping)} unique artists in {genre}"
+                    )
+
+                    # Add tracks in chunks of 100 maximum (Spotify API limit)
+                    for j in range(0, len(playlist_tracks), 100):
+                        chunk = playlist_tracks[j:min(j + 100, len(playlist_tracks))]
+                        self.sp.playlist_add_items(
+                            playlist['id'], 
+                            chunk
+                        )
+                        logging.info(f"Added {len(chunk)} tracks to playlist '{playlist_name}' (chunk {j//100 + 1})")
+
+                    # Log playlist details
+                    logging.info(f"Created playlist '{playlist_name}' with {len(playlist_tracks)} tracks")
+                    logging.info(f"Playlist URL: {playlist['external_urls']['spotify']}")
+
+                    # Track playlist creation
+                    playlist_targets[playlist_name] = {
+                        'genre': genre,
+                        'artists_count': len(artist_track_mapping),
+                        'tracks_count': len(playlist_tracks),
+                        'url': playlist['external_urls']['spotify']
+                    }
+
+                except Exception as e:
+                    logging.error(f"Failed to create playlist for genre '{playlist_name}': {e}")
+                    logging.error(traceback.format_exc())
+
+        # Log final summary
+        logging.info("\nPlaylist Creation Summary:")
+        for name, details in playlist_targets.items():
+            logging.info(
+                f"- {name}: "
+                f"{details['artists_count']} artists, "
+                f"{details['tracks_count']} tracks\n  URL: {details['url']}"
+            )
 
     def create_balanced_playlist(self, artist_track_mapping: Dict[str, List[str]]) -> List[str]:
         """
@@ -1970,28 +2089,25 @@ class SpotifyPlaylistManager:
 
 def main() -> None:
     """Main entry point for the Spotify Client application."""
-    # Configure logging
     setup_logging()
-    
+
     try:
         manager = SpotifyPlaylistManager()
-        file_path = manager.select_json_file()
-        if file_path:
-            # Use the genre-based function
-            genre_artists = manager.read_artist_genres(file_path)
-            if genre_artists:
-                # Add this line to explicitly signal the start of playlist generation
-                logging.info(f"Starting playlist generation for {sum(len(artists) for artists in genre_artists.values())} artists across {len(genre_artists)} genres")
-                manager.generate_playlists_by_genre(genre_artists)
-            else:
-                logging.error("No valid artists found in the JSON file.")
+
+        file_path = get_recommendations_path_from_config()
+        logging.info(f"Using recommendations file: {file_path}")
+
+        genre_artists = manager.read_artist_genres(file_path)
+        if genre_artists:
+            logging.info(f"Starting playlist generation for {sum(len(artists) for artists in genre_artists.values())} artists across {len(genre_artists)} genres")
+            manager.generate_playlists_by_genre(genre_artists)
         else:
-            logging.info("No file selected.")
+            logging.error("No valid artists found in the JSON file.")
     except KeyboardInterrupt:
         print("\nScript execution was interrupted by user.")
     except Exception as e:
         if "getaddrinfo failed" in str(e) or isinstance(e, socket.gaierror):
-            logging.error(f"Network connectivity issue: Failed to resolve 'api.spotify.com'")
+            logging.error("Network connectivity issue: Failed to resolve 'api.spotify.com'")
             logging.info("Please check your internet connection and try again.")
         else:
             logging.error(f"An unexpected error occurred: {e}")
