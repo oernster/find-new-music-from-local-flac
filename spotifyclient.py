@@ -1572,7 +1572,7 @@ class SpotifyPlaylistManager:
         - Genre consolidation
         - Exclusion of source artists
         - Proper playlist numbering
-        - Combines tracks into single playlist when total is less than 100
+        - Combines small playlists (less than 30 artists) into single playlist per genre
         """
         # Load source artists to exclude
         try:
@@ -1640,9 +1640,27 @@ class SpotifyPlaylistManager:
         # Get user ID once for playlist number checking
         user_id = self.sp.me()['id']
 
-        # Prepare progress tracking
-        total_genres = len(genre_artists)
+        # Group genres by their consolidated categories
+        consolidated_genres = {}
+        for genre, artists in genre_artists.items():
+            # Get the consolidated genre category for this genre
+            consolidated_genre = reverse_consolidation_map.get(genre, genre)
+            
+            if consolidated_genre not in consolidated_genres:
+                consolidated_genres[consolidated_genre] = []
+            
+            # Add all artists from this genre to the consolidated genre
+            consolidated_genres[consolidated_genre].extend(artists)
+        
+        # Remove duplicates from each consolidated genre's artist list
+        for genre in consolidated_genres:
+            consolidated_genres[genre] = list(set(consolidated_genres[genre]))
+            
+        # Get the actual number of consolidated genres for correct progress tracking
+        total_consolidated_genres = len(consolidated_genres)
         processed_genres = 0
+        
+        logging.info(f"Consolidated {len(genre_artists)} genres into {total_consolidated_genres} genre categories")
 
         # Process artists by genre
         def process_genre_artists(genre, all_artists):
@@ -1713,22 +1731,15 @@ class SpotifyPlaylistManager:
 
             return artist_track_mapping
 
-        # Process genres in order of size
-        sorted_genres = sorted(
-            [(primary_genre, consolidated_artists) 
-             for primary_genre, consolidated_artists in 
-             [(reverse_consolidation_map.get(genre, genre), artists) 
-              for genre, artists in genre_artists.items()]],
-            key=lambda x: len(x[1]),
-            reverse=True
-        )
-
-        # Generate playlists for each genre
-        for genre, genre_specific_artists in sorted_genres:
-            # Update progress tracking
+        # Collect all tracks for each genre to assess total counts
+        genre_tracks_collection = {}
+        
+        # Process consolidated genres
+        for genre, genre_specific_artists in consolidated_genres.items():
+            # Update progress tracking with the correct denominator (total_consolidated_genres)
             processed_genres += 1
-            progress_percentage = int((processed_genres / total_genres) * 100)
-            logging.info(f"Processing: {progress_percentage}% ({processed_genres}/{total_genres} genres)")
+            progress_percentage = int((processed_genres / total_consolidated_genres) * 100)
+            logging.info(f"Processing: {progress_percentage}% ({processed_genres}/{total_consolidated_genres} genres)")
             
             logging.info(f"Processing genre: {genre} with {len(genre_specific_artists)} artists")
             
@@ -1742,52 +1753,45 @@ class SpotifyPlaylistManager:
 
             # Create balanced playlist
             balanced_tracks = self.create_balanced_playlist(artist_track_mapping)
-            total_tracks = len(balanced_tracks)
             
-            logging.info(f"Found {total_tracks} tracks for genre '{genre}' from {len(artist_track_mapping)} artists")
-
-            # Determine playlist count - IMPROVED LOGIC
-            # Keep all tracks in a single playlist if less than 100 tracks
-            # Only split if we have more than 100 tracks
-            if total_tracks <= 100:
-                num_playlists = 1
-                logging.info(f"Creating a single playlist for {total_tracks} tracks in genre '{genre}'")
+            # Store in the collection for later consolidation
+            if genre not in genre_tracks_collection:
+                genre_tracks_collection[genre] = {
+                    'tracks': balanced_tracks,
+                    'artists_count': len(artist_track_mapping),
+                    'tracks_count': len(balanced_tracks)
+                }
             else:
-                # Calculate how many playlists we need, each with around 80-100 tracks
-                num_playlists = (total_tracks + 79) // 80
-                logging.info(f"Creating {num_playlists} playlists for {total_tracks} tracks in genre '{genre}'")
+                # Append to existing genre
+                genre_tracks_collection[genre]['tracks'].extend(balanced_tracks)
+                genre_tracks_collection[genre]['artists_count'] += len(artist_track_mapping)
+                genre_tracks_collection[genre]['tracks_count'] += len(balanced_tracks)
 
-            # Get the next available playlist number for this genre
-            next_number = self.get_next_playlist_number(genre, user_id)
+        # Second pass: Create playlists based on collected track counts
+        for genre, collection_data in genre_tracks_collection.items():
+            total_tracks = collection_data['tracks_count']
+            total_artists = collection_data['artists_count']
+            balanced_tracks = collection_data['tracks']
             
-            # Create playlists
-            for i in range(num_playlists):
-                # Distribute tracks evenly across playlists
-                if num_playlists == 1:
-                    # Single playlist - use all tracks
-                    playlist_tracks = balanced_tracks
-                else:
-                    # Multiple playlists - split tracks evenly
-                    tracks_per_playlist = total_tracks // num_playlists
-                    start_index = i * tracks_per_playlist
-                    end_index = (i + 1) * tracks_per_playlist if i < num_playlists - 1 else total_tracks
-                    playlist_tracks = balanced_tracks[start_index:end_index]
+            logging.info(f"Creating playlists for genre '{genre}' with {total_tracks} tracks from {total_artists} artists")
 
-                # Playlist name with proper numbering
-                playlist_name = f"{genre} #{next_number + i}"
-
+            # For small playlists (less than 30 artists), create just 1 playlist without numbering
+            if total_artists < 30:
                 try:
+                    # Use a clean genre name without numbering for small playlists
+                    playlist_name = genre
+                    
                     # Create playlist
                     playlist = self.sp.user_playlist_create(
                         user=user_id,
                         name=playlist_name,
                         public=True,
-                        description=f"Top tracks from {len(artist_track_mapping)} unique artists in {genre}"
+                        description=f"Top tracks from {total_artists} unique artists in {genre}"
                     )
 
                     # Add tracks in chunks of 100 maximum (Spotify API limit)
-                    for j in range(0, len(playlist_tracks), 100):
-                        chunk = playlist_tracks[j:min(j + 100, len(playlist_tracks))]
+                    for j in range(0, total_tracks, 100):
+                        chunk = balanced_tracks[j:min(j + 100, total_tracks)]
                         self.sp.playlist_add_items(
                             playlist['id'], 
                             chunk
@@ -1795,20 +1799,84 @@ class SpotifyPlaylistManager:
                         logging.info(f"Added {len(chunk)} tracks to playlist '{playlist_name}' (chunk {j//100 + 1})")
 
                     # Log playlist details
-                    logging.info(f"Created playlist '{playlist_name}' with {len(playlist_tracks)} tracks")
+                    logging.info(f"Created playlist '{playlist_name}' with {total_tracks} tracks from {total_artists} artists")
                     logging.info(f"Playlist URL: {playlist['external_urls']['spotify']}")
 
                     # Track playlist creation
                     playlist_targets[playlist_name] = {
                         'genre': genre,
-                        'artists_count': len(artist_track_mapping),
-                        'tracks_count': len(playlist_tracks),
+                        'artists_count': total_artists,
+                        'tracks_count': total_tracks,
                         'url': playlist['external_urls']['spotify']
                     }
-
+                    
                 except Exception as e:
                     logging.error(f"Failed to create playlist for genre '{playlist_name}': {e}")
                     logging.error(traceback.format_exc())
+                
+            else:
+                # For larger collections, follow the original logic of splitting into multiple playlists
+                # Determine playlist count
+                if total_tracks <= 100:
+                    num_playlists = 1
+                    logging.info(f"Creating a single playlist for {total_tracks} tracks in genre '{genre}'")
+                else:
+                    # Calculate how many playlists we need, each with around 80-100 tracks
+                    num_playlists = (total_tracks + 79) // 80
+                    logging.info(f"Creating {num_playlists} playlists for {total_tracks} tracks in genre '{genre}'")
+
+                # Get the next available playlist number for this genre
+                next_number = self.get_next_playlist_number(genre, user_id)
+                
+                # Create playlists
+                for i in range(num_playlists):
+                    # Distribute tracks evenly across playlists
+                    if num_playlists == 1:
+                        # Single playlist - use all tracks
+                        playlist_tracks = balanced_tracks
+                    else:
+                        # Multiple playlists - split tracks evenly
+                        tracks_per_playlist = total_tracks // num_playlists
+                        start_index = i * tracks_per_playlist
+                        end_index = (i + 1) * tracks_per_playlist if i < num_playlists - 1 else total_tracks
+                        playlist_tracks = balanced_tracks[start_index:end_index]
+
+                    # Playlist name with proper numbering
+                    playlist_name = f"{genre} #{next_number + i}"
+
+                    try:
+                        # Create playlist
+                        playlist = self.sp.user_playlist_create(
+                            user=user_id,
+                            name=playlist_name,
+                            public=True,
+                            description=f"Top tracks from {total_artists} unique artists in {genre}"
+                        )
+
+                        # Add tracks in chunks of 100 maximum (Spotify API limit)
+                        for j in range(0, len(playlist_tracks), 100):
+                            chunk = playlist_tracks[j:min(j + 100, len(playlist_tracks))]
+                            self.sp.playlist_add_items(
+                                playlist['id'], 
+                                chunk
+                            )
+                            logging.info(f"Added {len(chunk)} tracks to playlist '{playlist_name}' (chunk {j//100 + 1})")
+
+                        # Log playlist details
+                        logging.info(f"Created playlist '{playlist_name}' with {len(playlist_tracks)} tracks")
+                        logging.info(f"Playlist URL: {playlist['external_urls']['spotify']}")
+
+                        # Track playlist creation
+                        playlist_targets[playlist_name] = {
+                            'genre': genre,
+                            'artists_count': total_artists,
+                            'tracks_count': len(playlist_tracks),
+                            'url': playlist['external_urls']['spotify']
+                        }
+
+                    except Exception as e:
+                        logging.error(f"Failed to create playlist for genre '{playlist_name}': {e}")
+                        logging.error(traceback.format_exc())
 
         # Log final summary
         logging.info("\nPlaylist Creation Summary:")
