@@ -1640,6 +1640,10 @@ class SpotifyPlaylistManager:
         # Get user ID once for playlist number checking
         user_id = self.sp.me()['id']
 
+        # Prepare progress tracking
+        total_genres = len(genre_artists)
+        processed_genres = 0
+
         # Process artists by genre
         def process_genre_artists(genre, all_artists):
             """
@@ -1721,6 +1725,11 @@ class SpotifyPlaylistManager:
 
         # Generate playlists for each genre
         for genre, genre_specific_artists in sorted_genres:
+            # Update progress tracking
+            processed_genres += 1
+            progress_percentage = int((processed_genres / total_genres) * 100)
+            logging.info(f"Processing: {progress_percentage}% ({processed_genres}/{total_genres} genres)")
+            
             logging.info(f"Processing genre: {genre} with {len(genre_specific_artists)} artists")
             
             # Get tracks for this genre

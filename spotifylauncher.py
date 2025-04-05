@@ -381,10 +381,19 @@ class ScriptWorker(QThread):
         self.processed_artists = 0
         self.extra_args = []  # Additional command line arguments
         
+        # Add these variables for cumulative genre tracking
+        self.total_genres = 0
+        self.current_genre = 0
+        self.total_artists_in_genres = 0
+        self.processed_artists_in_genres = 0
+        self.current_genre_name = ""
+        self.current_genre_artists = 0
+        self.current_genre_processed = 0
+        
         # Log the initialization
         print(f"Initializing {script_name} worker for: {script_path}")
         
-        # Progress tracking patterns
+        # Progress tracking patterns - add patterns for genre processing
         self.progress_patterns = [
             # For ProgressBar updates (match percentage complete)
             re.compile(r'Progress.*?(\d+\.\d+)%'),
@@ -395,7 +404,15 @@ class ScriptWorker(QThread):
             # MusicBrainz related progress - detect starting to process an artist
             re.compile(r'=== PROCESSING: (.+?) ==='),
             # Progress bar with percentage
-            re.compile(r'Progress: \|.+?\| (\d+\.\d+)% Complete')
+            re.compile(r'Progress: \|.+?\| (\d+\.\d+)% Complete'),
+            # Genre progress pattern
+            re.compile(r'Processing: (\d+)% \((\d+)/(\d+) genres\)'),
+            # Processing genre with X artists
+            re.compile(r'Processing genre: (.+?) with (\d+) artists'),
+            # Processing up to X artists for genre
+            re.compile(r'Processing up to (\d+) artists for genre: (.+)'),
+            # Added tracks from artist X/Y
+            re.compile(r'Added .+ track\(s\) from .+ \((\d+)/(\d+)\)')
         ]
         
         # Additional markers for music discovery script
@@ -624,6 +641,102 @@ class ScriptWorker(QThread):
             bool: True if progress was updated, False otherwise
         """
         try:
+            # First, check for genre-related progress indicators
+            
+            # Check for genre progress pattern: Processing: X% (Y/Z genres)
+            genre_progress_match = re.search(r'Processing: (\d+)% \((\d+)/(\d+) genres\)', line)
+            if genre_progress_match:
+                percentage = int(genre_progress_match.group(1))
+                current = int(genre_progress_match.group(2))
+                total = int(genre_progress_match.group(3))
+                
+                # Update our tracking variables
+                self.current_genre = current
+                self.total_genres = total
+                
+                # Reset the artist counters for the new genre
+                self.current_genre_processed = 0
+                
+                # For progress percentage, we'll use the overall genre percentage
+                # but we'll show both genre progress and cumulative artist progress in the status
+                self.update_progress.emit(
+                    percentage, 
+                    f"Genres: {current}/{total} ({percentage}%) - Artists: {self.processed_artists_in_genres}/{self.total_artists_in_genres}"
+                )
+                self.current_value = percentage
+                return True
+            
+            # Check for "Processing genre: X with Y artists"
+            genre_artists_match = re.search(r'Processing genre: (.+?) with (\d+) artists', line)
+            if genre_artists_match:
+                genre_name = genre_artists_match.group(1)
+                artists_count = int(genre_artists_match.group(2))
+                
+                # Update our tracking variables
+                self.current_genre_name = genre_name
+                self.current_genre_artists = artists_count
+                self.total_artists_in_genres += artists_count
+                
+                # Update the status but don't change the progress percentage
+                status_message = f"Processing genre: {genre_name} ({self.current_genre}/{self.total_genres}) with {artists_count} artists"
+                self.update_progress.emit(-6, status_message)
+                return True
+            
+            # Check for "Processing up to X artists for genre: Y"
+            processing_up_to_match = re.search(r'Processing up to (\d+) artists for genre: (.+)', line)
+            if processing_up_to_match:
+                artists_to_process = int(processing_up_to_match.group(1))
+                genre_name = processing_up_to_match.group(2)
+                
+                # This updates how many we'll actually process (may be less than total)
+                if artists_to_process < self.current_genre_artists:
+                    # Adjust our total to be more accurate
+                    self.total_artists_in_genres -= (self.current_genre_artists - artists_to_process)
+                    self.current_genre_artists = artists_to_process
+                
+                # Update the status but don't change the progress percentage
+                status_message = f"Processing {artists_to_process} artists for genre: {genre_name} ({self.current_genre}/{self.total_genres})"
+                self.update_progress.emit(-6, status_message)
+                return True
+            
+            # Check for "Added X track(s) from Artist (Y/Z)"
+            artist_track_match = re.search(r'Added .+ track\(s\) from .+ \((\d+)/(\d+)\)', line)
+            if artist_track_match:
+                current_artist = int(artist_track_match.group(1))
+                total_artists = int(artist_track_match.group(2))
+                
+                # Update our tracking for the current genre
+                self.current_genre_processed = current_artist
+                
+                # Update our cumulative artist count
+                if current_artist > self.current_genre_processed:
+                    self.processed_artists_in_genres += 1
+                
+                # Calculate overall progress
+                overall_percentage = 0
+                if self.total_artists_in_genres > 0:
+                    overall_percentage = int((self.processed_artists_in_genres / self.total_artists_in_genres) * 100)
+                
+                # Create a status message showing both the current genre progress and cumulative progress
+                genre_progress = f"{current_artist}/{total_artists}"
+                cumulative_progress = f"{self.processed_artists_in_genres}/{self.total_artists_in_genres}"
+                
+                status_message = f"Genre {self.current_genre_name}: {genre_progress} artists - Overall: {cumulative_progress} artists"
+                
+                # Emit the progress update - we'll calculate percentage based on completed genres + partial current genre
+                genre_percentage = int(self.current_genre / self.total_genres * 100)
+                genre_fraction = (current_artist / total_artists) / self.total_genres
+                adjusted_percentage = genre_percentage - (100 / self.total_genres) + int(genre_fraction * 100)
+                
+                # Make sure the progress is always increasing
+                if adjusted_percentage > self.current_value:
+                    self.current_value = adjusted_percentage
+                
+                self.update_progress.emit(self.current_value, status_message)
+                return True
+            
+            # If no genre-specific patterns match, fall back to the original logic
+            
             # Check for total artists initialization
             total_artists_match = re.search(r'JSON file contains (\d+) total unique artists to process', line)
             if total_artists_match:
@@ -707,13 +820,6 @@ class ScriptWorker(QThread):
                 if playlist_url_match:
                     self.update_progress.emit(-5, "Playlist created successfully")
                     return True
-            
-            # Detect processing a specific genre
-            genre_match = re.search(r"Processing artists in genre: (.+)", line)
-            if genre_match:
-                genre = genre_match.group(1)
-                self.update_progress.emit(-6, f"Processing genre: {genre}")
-                return True
             
             # Detect organizing tracks for a specific artist
             organize_match = re.search(r"Organizing tracks for artist: (.+)", line)
@@ -2290,7 +2396,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius v3.7
+    GenreGenius - Version 1.0.0
     By Oliver Ernster
 
     A tool for discovering music and generating
@@ -2705,101 +2811,104 @@ class SpotifyLauncher(QMainWindow):
                 self.spotify_status1.setText("Artist Classification Complete")
                 return
             
-            # Advanced artist processing pattern matching
-            artist_match = re.search(r'Processing: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
-            detailed_artist_match = re.search(r'=== PROCESSING: (.+?) ===', status)
+            # Check if we're in phase 2 for genre/artist specific updates
+            if self.phase2_active:
+                # Genre processing update (code -6)
+                if value == -6:
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
+                    
+                # Finding tracks for artist (code -7)
+                if value == -7:
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
+                    
+                # Creating playlist (code -4)
+                if value == -4:
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
+                    
+                # Playlist created successfully (code -5)
+                if value == -5:
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
+                    
+                # Processing artist (code -3)
+                if value == -3:
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
+                    
+                # Direct progress update for phase 2
+                if 0 <= value <= 100:
+                    self.spotify_progress2.setValue(value)
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
             
-            if artist_match:
+            # Advanced artist processing pattern matching - for Phase 1
+            artist_match = re.search(r'Processing: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
+            if artist_match and not self.phase2_active:
                 percentage = float(artist_match.group(1))
                 current = int(artist_match.group(2))
                 total = int(artist_match.group(3))
                 
-                # Set progress bar
-                if not self.phase2_active:
-                    self.spotify_progress1.setValue(int(percentage))
-                    
-                    # Detailed status with artist count
-                    status_text = f"Processing artist {current} of {total}"
-                    self.spotify_status1.setText(self.truncate_status(status_text))
-                    
-                    # Log the progress for debugging
-                    self.log_status(f"Updated Phase 1 progress bar to {percentage}% ({current}/{total})")
-                else:
-                    self.spotify_progress2.setValue(int(percentage))
-                    
-                    # Detailed status with artist count
-                    status_text = f"Processing artist {current} of {total} (Playlist Generation)"
-                    self.spotify_status2.setText(self.truncate_status(status_text))
-                    
-                    # Log the progress for debugging
-                    self.log_status(f"Updated Phase 2 progress bar to {percentage}% ({current}/{total})")
+                # Set progress bar for Phase 1
+                self.spotify_progress1.setValue(int(percentage))
                 
-                return
-            
-            # Fall back to alternative artist processing pattern
-            elif detailed_artist_match:
-                current_artist = detailed_artist_match.group(1)
+                # Detailed status with artist count
+                status_text = f"Processing artist {current} of {total}"
+                self.spotify_status1.setText(self.truncate_status(status_text))
                 
-                # Try to get total artists from elsewhere in the log
-                total_match = re.search(r'Attempting to create (\d+) playlists', self.spotify_output.toPlainText())
-                total = int(total_match.group(1)) if total_match else "unknown"
+                # Log the progress for debugging
+                self.log_status(f"Updated Phase 1 progress bar to {percentage}% ({current}/{total})")
+                return
+            
+            # Check for "Genres: X/Y (Z%) - Artists: A/B" format for Phase 2
+            genres_artists_match = re.search(r'Genres: (\d+)/(\d+) \((\d+)%\) - Artists: (\d+)/(\d+)', status)
+            if genres_artists_match and self.phase2_active:
+                current_genre = int(genres_artists_match.group(1))
+                total_genres = int(genres_artists_match.group(2))
+                percentage = int(genres_artists_match.group(3))
+                current_artist = int(genres_artists_match.group(4))
+                total_artists = int(genres_artists_match.group(5))
                 
-                # Use a more generic status that shows processing is ongoing
-                status_text = f"Processing artist: {current_artist}"
-                if total != "unknown":
-                    status_text += f" (estimating progress)"
+                # Update progress bar for Phase 2
+                self.spotify_progress2.setValue(percentage)
                 
-                if not self.phase2_active:
-                    self.spotify_status1.setText(self.truncate_status(status_text))
-                else:
-                    self.spotify_status2.setText(self.truncate_status(status_text))
+                # Detailed status showing both genre and artist progress
+                status_text = f"Genres: {current_genre}/{total_genres} - Artists: {current_artist}/{total_artists}"
+                self.spotify_status2.setText(self.truncate_status(status_text))
                 
+                # Log the progress for debugging
+                self.log_status(f"Updated Phase 2 progress bar to {percentage}% - {status_text}")
                 return
             
-            # Handle special artist processing status with code -3
-            if value == -3:
-                if self.phase2_active:
-                    self.spotify_status2.setText(self.truncate_status(status))
-                else:
-                    self.spotify_status1.setText(self.truncate_status(status))
+            # Check for "Genre X: Y/Z artists - Overall: A/B artists" format for Phase 2
+            genre_artists_match = re.search(r'Genre (.+?): (\d+)/(\d+) artists - Overall: (\d+)/(\d+) artists', status)
+            if genre_artists_match and self.phase2_active:
+                genre_name = genre_artists_match.group(1)
+                current_in_genre = int(genre_artists_match.group(2))
+                total_in_genre = int(genre_artists_match.group(3))
+                overall_current = int(genre_artists_match.group(4))
+                overall_total = int(genre_artists_match.group(5))
+                
+                # Calculate percentage based on overall artists
+                if overall_total > 0:
+                    percentage = int((overall_current / overall_total) * 100)
+                    self.spotify_progress2.setValue(percentage)
+                
+                # Detailed status showing both current genre and overall progress
+                status_text = f"Genre {genre_name}: {current_in_genre}/{total_in_genre} - Overall: {overall_current}/{overall_total}"
+                self.spotify_status2.setText(self.truncate_status(status_text))
+                
+                # Log the progress for debugging
+                self.log_status(f"Updated Phase 2 progress bar for genre processing - {status_text}")
                 return
             
-            # Handle playlist creation with code -4
-            if value == -4 and self.phase2_active:
-                self.spotify_status2.setText(self.truncate_status(status))
-                # Update progress if it's below a certain threshold
-                if self.spotify_progress2.value() < 60:
-                    self.spotify_progress2.setValue(60)
-                return
-            
-            # Handle successful playlist creation with code -5
-            if value == -5 and self.phase2_active:
-                self.spotify_status2.setText(self.truncate_status(status))
-                # Set progress to at least 80% when playlists are being successfully created
-                if self.spotify_progress2.value() < 80:
-                    self.spotify_progress2.setValue(80)
-                return
-            
-            # Handle genre processing with code -6
-            if value == -6 and self.phase2_active:
-                self.spotify_status2.setText(self.truncate_status(status))
-                # Ensure progress shows movement for genre processing
-                if self.spotify_progress2.value() < 40:
-                    self.spotify_progress2.setValue(40)
-                return
-            
-            # Handle finding tracks for artist with code -7
-            if value == -7 and self.phase2_active:
-                self.spotify_status2.setText(self.truncate_status(status))
-                # Ensure progress shows movement for track finding
-                if self.spotify_progress2.value() < 50:
-                    self.spotify_progress2.setValue(50)
-                return
-            
-            # Direct progress percentage update (from the value parameter)
+            # Fall back to direct progress percentage update if we're in the appropriate phase
             if 0 <= value <= 100:
                 if self.phase2_active:
                     self.spotify_progress2.setValue(value)
+                    
                     # If this is a completion signal
                     if value >= 95:
                         self.spotify_status2.setText("Completing playlist generation...")
@@ -2836,7 +2945,7 @@ class SpotifyLauncher(QMainWindow):
             # Log the error but don't crash
             error_msg = f"Error in update_spotify_progress: {str(e)}\n{traceback.format_exc()}"
             self.log_status(error_msg)
-            print(f"Error in update_spotify_progress: {str(e)}")    
+            print(f"Error in update_spotify_progress: {str(e)}")
             
     def update_discovery_progress(self, value: int, status: str):
         """
