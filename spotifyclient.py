@@ -889,7 +889,7 @@ class SpotifyPlaylistManager:
     def get_track_genres(self, track: Dict, target_genre: str) -> Tuple[bool, float, List[str]]:
         """
         Get genres for a track and check if it matches the target genre with improved matching.
-        Uses a more flexible approach to genre matching to include more tracks.
+        Uses a stricter approach to genre matching to ensure higher playlist quality.
         
         Args:
             track (Dict): Track data from Spotify API
@@ -920,7 +920,7 @@ class SpotifyPlaylistManager:
         # Create list of all genres found
         genre_list = list(all_genres)
         
-        # Check for key signifier genres that strongly indicate a specific classification
+        # Keep the original detailed genre signifiers - they provide valuable nuance
         rock_signifiers = {'rock', 'alternative', 'punk', 'metal', 'grunge', 'indie rock', 
                           'hard rock', 'progressive rock', 'classic rock', 'alternative rock',
                           'industrial rock', 'industrial', 'post-punk', 'new wave', 'garage rock'}
@@ -950,7 +950,7 @@ class SpotifyPlaylistManager:
             'pop': pop_signifiers,
             'hip hop': hiphop_signifiers,
             'jazz': jazz_signifiers,
-            'classical': classical_signifiers,
+            'classical': classical_signifiers, 
             'folk': folk_signifiers,
         }
         
@@ -958,7 +958,7 @@ class SpotifyPlaylistManager:
         if target_lower in all_genres:
             return (True, 1.0, genre_list)
         
-        # Check for part of a compound genre (e.g., "Rock - Classic" matches with "rock" genres)
+        # Check for part of a compound genre (e.g., "Rock - Classic" matches with "rock" genres)  
         target_parts = target_lower.split(' - ')
         primary_target = target_parts[0] if target_parts else target_lower
         
@@ -979,8 +979,8 @@ class SpotifyPlaylistManager:
         if target_category:
             # Check if any of the track's genres belong to the same category
             track_genre_matches = all_genres.intersection(category_signifiers[target_category])
-            if track_genre_matches:
-                match_strength = min(0.85, 0.6 + (len(track_genre_matches) * 0.05))
+            if track_genre_matches:  
+                match_strength = min(0.9, 0.75 + (len(track_genre_matches) * 0.05))
                 return (True, match_strength, genre_list)
         
         # For subgenre matching (if target is like "Rock - Progressive")
@@ -993,40 +993,37 @@ class SpotifyPlaylistManager:
                 if primary_target in genre and subgenre in genre:
                     return (True, 0.85, genre_list)
                 
-            # Match just on the subgenre part with lower confidence
+            # Match just on the subgenre part with lower confidence 
             for genre in all_genres:
                 if subgenre in genre:
                     return (True, 0.7, genre_list)
         
         # Check for broader pattern matching - look for target words in genres
         target_words = set(target_lower.split())
-        for genre in all_genres:
+        for genre in all_genres:  
             genre_words = set(genre.split())
             common_words = target_words.intersection(genre_words)
-            if common_words and len(common_words) / len(target_words) >= 0.5:
-                match_strength = 0.6 + (len(common_words) / len(target_words) * 0.2)
+            if common_words and len(common_words) / len(target_words) >= 0.75:
+                match_strength = 0.75 + (len(common_words) / len(target_words) * 0.2)
                 return (True, match_strength, genre_list)
         
-        # For genre conflict cases (e.g., both rock and electronic elements)
-        rock_matches = len(all_genres.intersection(rock_signifiers))
-        electronic_matches = len(all_genres.intersection(electronic_signifiers))
+        # Handle genre conflict cases for all target genres
+        for category1, category2 in itertools.combinations(category_signifiers.keys(), 2):
+            matches1 = len(all_genres.intersection(category_signifiers[category1]))  
+            matches2 = len(all_genres.intersection(category_signifiers[category2]))
+            
+            if matches1 > 0 and matches2 > 0:
+                if matches1 > matches2 and primary_target == category1:
+                    return (True, 0.9, genre_list)
+                elif matches1 > matches2 and primary_target == category2:   
+                    return (False, 0.1, genre_list)  
+                elif matches2 > matches1 and primary_target == category2:
+                    return (True, 0.9, genre_list)
+                elif matches2 > matches1 and primary_target == category1: 
+                    return (False, 0.1, genre_list)
         
-        if rock_matches > 0 and electronic_matches > 0:
-            if rock_matches >= electronic_matches and primary_target == 'rock':
-                # This is primarily a rock artist appearing in rock playlist
-                return (True, 0.8, genre_list)
-            elif rock_matches > electronic_matches and primary_target == 'electronic':
-                # This is primarily a rock artist wrongly in electronic playlist
-                return (False, 0.2, genre_list)
-            elif electronic_matches > rock_matches and primary_target == 'electronic':
-                # This is primarily an electronic artist in electronic playlist
-                return (True, 0.8, genre_list)
-            elif electronic_matches >= rock_matches and primary_target == 'rock':
-                # This is primarily an electronic artist wrongly in rock playlist
-                return (False, 0.2, genre_list)
-        
-        # Default case - low match score
-        return (False, 0.3, genre_list)
+        # Default case - low match score  
+        return (False, 0.15, genre_list)
 
     def get_simplified_track_match(self, artist_tuple: Tuple[str, List[str]], target_genre: str) -> Tuple[bool, float]:
         """
