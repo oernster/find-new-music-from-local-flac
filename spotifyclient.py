@@ -647,7 +647,7 @@ class SpotifyPlaylistManager:
         Read artists from JSON file and organize by genre with improved processing.
         - Processes both source artists and their recommendations
         - Better handles large artist collections
-        - Improves genre assignment
+        - Improves genre assignment with better consolidation
         
         Args:
             filename (str): Path to the JSON file
@@ -661,6 +661,24 @@ class SpotifyPlaylistManager:
             
             # Dictionary to map genres to artists
             genre_artists = defaultdict(list)
+            
+            # Define our primary genre categories for initial consolidation
+            # Use a more limited set of high-level categories to initially reduce genre count
+            primary_genres = {
+                'Rock': ['rock', 'alternative', 'punk', 'metal', 'grunge', 'indie rock'],
+                'Pop': ['pop', 'synth-pop', 'dance-pop', 'electropop', 'indie pop'],
+                'Electronic': ['electronic', 'techno', 'house', 'trance', 'edm', 'ambient', 'dance'],
+                'Hip Hop': ['hip hop', 'rap', 'trap', 'urban', 'conscious hip hop'],
+                'R&B & Soul': ['r&b', 'soul', 'neo soul', 'funk', 'rhythm and blues'],
+                'Jazz': ['jazz', 'bebop', 'fusion', 'smooth jazz', 'big band'],
+                'Folk & Country': ['folk', 'country', 'americana', 'bluegrass', 'singer-songwriter'],
+                'Classical': ['classical', 'orchestra', 'chamber', 'baroque', 'piano'],
+                'World': ['world', 'latin', 'reggae', 'afrobeat', 'traditional'],
+                'Blues': ['blues', 'chicago blues', 'delta blues', 'blues rock'],
+                'Punk': ['punk', 'hardcore', 'post-punk', 'punk rock'],
+                'Indie': ['indie', 'indie rock', 'indie pop', 'lo-fi'],
+                'Metal': ['metal', 'heavy metal', 'thrash metal', 'death metal', 'black metal']
+            }
             
             # Collect all unique artists to process (both keys and values)
             all_artists = set()
@@ -706,65 +724,72 @@ class SpotifyPlaylistManager:
                                 primary_genre = cleaned_genres[0]
                                 all_genres = cleaned_genres
                     
-                    # Add the artist to its primary genre
-                    if artist not in genre_artists[primary_genre]:
-                        genre_artists[primary_genre].append(artist)
+                    # IMPROVEMENT: Map minor genres to primary categories using the primary_genres mapping
+                    # This helps reduce the total number of genre categories
+                    mapped_primary_genre = None
+                    # Convert primary genre to lowercase for matching
+                    primary_genre_lower = primary_genre.lower()
                     
-                    # Add to ALL secondary genres to maximize playlist generation
-                    if len(all_genres) > 1:
+                    # First, check if the primary genre name directly matches one of our high-level categories
+                    for main_genre, keywords in primary_genres.items():
+                        if primary_genre_lower == main_genre.lower():
+                            mapped_primary_genre = main_genre
+                            break
+                    
+                    # If not, look for keyword matches
+                    if not mapped_primary_genre:
+                        for main_genre, keywords in primary_genres.items():
+                            # Check if the primary genre contains any of the keywords for this category
+                            if any(keyword in primary_genre_lower for keyword in keywords):
+                                mapped_primary_genre = main_genre
+                                logging.info(f"Mapped genre '{primary_genre}' to primary category '{main_genre}'")
+                                break
+                    
+                    # If we still don't have a mapping, try to match against the secondary genres
+                    if not mapped_primary_genre and len(all_genres) > 1:
                         for secondary_genre in all_genres[1:]:
-                            if secondary_genre != primary_genre:
-                                if artist not in genre_artists[secondary_genre]:
-                                    genre_artists[secondary_genre].append(artist)
+                            secondary_lower = secondary_genre.lower()
+                            for main_genre, keywords in primary_genres.items():
+                                if any(keyword in secondary_lower for keyword in keywords):
+                                    mapped_primary_genre = main_genre
+                                    logging.info(f"Mapped artist '{artist}' to '{main_genre}' based on secondary genre '{secondary_genre}'")
+                                    break
+                            if mapped_primary_genre:
+                                break
+                    
+                    # If no mapping found, use the original primary genre
+                    if not mapped_primary_genre:
+                        mapped_primary_genre = primary_genre
+                    
+                    # Add the artist to its primary genre
+                    if artist not in genre_artists[mapped_primary_genre]:
+                        genre_artists[mapped_primary_genre].append(artist)
+                    
+                    # Add to secondary genres to maximize playlist generation - BUT LIMIT TO MAJOR CATEGORIES
+                    # This helps reduce the number of genres while still ensuring an artist shows up in multiple
+                    # relevant playlists
+                    if len(all_genres) > 1:
+                        for secondary_genre in all_genres[1:3]:  # Limit to only 2 secondary genres per artist
+                            # Try to map this secondary genre to a primary category
+                            mapped_secondary = None
+                            secondary_lower = secondary_genre.lower()
+                            
+                            for main_genre, keywords in primary_genres.items():
+                                if any(keyword in secondary_lower for keyword in keywords):
+                                    mapped_secondary = main_genre
+                                    break
+                            
+                            # Only use the secondary genre if it maps to a different primary category
+                            if mapped_secondary and mapped_secondary != mapped_primary_genre:
+                                if artist not in genre_artists[mapped_secondary]:
+                                    genre_artists[mapped_secondary].append(artist)
+                                    logging.info(f"Added '{artist}' to secondary genre '{mapped_secondary}'")
                     
                     # Update processed count and log progress
                     self.processed_keys += 1
                     progress_percent = (self.processed_keys / self.total_keys) * 100
                     if self.processed_keys % 10 == 0 or self.processed_keys == self.total_keys:
                         logging.info(f"Progress: {progress_percent:.1f}% ({self.processed_keys}/{self.total_keys} artists)")
-            
-            # Instead of removing small categories, keep them for more playlists
-            # Only merge categories with fewer than 3 artists
-            categories_to_merge = []
-            main_categories = {}
-            
-            # First pass: identify very small categories to potentially merge
-            for genre, artists in list(genre_artists.items()):
-                if len(artists) < 3:  # Only merge extremely small categories
-                    categories_to_merge.append(genre)
-                elif genre != "Miscellaneous" and len(artists) >= 5:  # Significant categories
-                    main_categories[genre] = len(artists)
-            
-            # Try to merge tiny categories
-            if categories_to_merge and main_categories:
-                logging.info(f"Attempting to merge {len(categories_to_merge)} very small categories")
-                
-                for small_genre in categories_to_merge:
-                    if small_genre not in genre_artists:
-                        continue
-                    
-                    small_artists = genre_artists[small_genre]
-                    best_match = None
-                    max_similarity = 0
-                    
-                    # Find the most similar major category
-                    for main_genre in main_categories:
-                        similarity = self.calculate_genre_similarity(small_genre, main_genre)
-                        if similarity > max_similarity:
-                            max_similarity = similarity
-                            best_match = main_genre
-                    
-                    # Only merge if we found a good match
-                    if best_match and max_similarity > 0.5:  # Higher threshold for similarity
-                        logging.info(f"Merging '{small_genre}' into '{best_match}' (similarity: {max_similarity:.2f})")
-                        
-                        # Add artists from small category to the main one
-                        for artist in small_artists:
-                            if artist not in genre_artists[best_match]:
-                                genre_artists[best_match].append(artist)
-                        
-                        # Remove the small category
-                        del genre_artists[small_genre]
             
             # Log summary of genres and artists
             total_artists_in_genres = sum(len(artists) for artists in genre_artists.values())
@@ -778,7 +803,6 @@ class SpotifyPlaylistManager:
             import traceback
             logging.error(traceback.format_exc())
             return defaultdict(list)
-
 
     @backoff.on_exception(
         backoff.expo, 
@@ -1314,45 +1338,95 @@ class SpotifyPlaylistManager:
         artist_id = best_match['id']
         artist_name = best_match['name']
         
-        # Get artist's top tracks with increased limit for more choices
-        try:
-            top_tracks = self.retry_on_rate_limit(self.sp.artist_top_tracks, artist_id)
-        except Exception as e:
-            logging.error(f"Error getting top tracks for {artist_name}: {e}")
-            return []
-        
+        # MODIFIED: Get more tracks using multiple methods to get more than 10
         matching_tracks = []
         all_tracks = []
         
-        if top_tracks and 'tracks' in top_tracks:
-            for track in top_tracks['tracks']:
-                track_id = track['id']
-                track_name = track['name']
+        # Method 1: Get top tracks (up to 10 from Spotify API)
+        try:
+            top_tracks = self.retry_on_rate_limit(self.sp.artist_top_tracks, artist_id)
+            
+            if top_tracks and 'tracks' in top_tracks:
+                for track in top_tracks['tracks']:
+                    track_id = track['id']
+                    track_name = track['name']
+                    
+                    # Prioritize tracks where this artist is the primary artist
+                    primary_artist = track['artists'][0] if track['artists'] else None
+                    is_primary = primary_artist and primary_artist['id'] == artist_id
+                    
+                    # Check match score against target genre
+                    # First use the simplified track match for speed
+                    artist_tup = (artist, artist_genres)
+                    matches, score = self.get_simplified_track_match(artist_tup, target_genre)
+                    
+                    # If the artist is not the primary artist, reduce the score
+                    if not is_primary:
+                        score *= 0.8  # 20% penalty for not being primary artist
+                    
+                    track_info = (track_id, score)
+                    
+                    # Keep all tracks in a separate list
+                    all_tracks.append(track_info)
+                    
+                    # Add matching tracks to our results list
+                    if matches:
+                        matching_tracks.append(track_info)
+                        logging.info(f"Found matching track for '{artist_name}': '{track_name}' (Score: {score:.2f})")
+        except Exception as e:
+            logging.error(f"Error getting top tracks for {artist_name}: {e}")
+        
+        # Method 2: Get additional tracks from albums if needed
+        if len(all_tracks) < 15:
+            try:
+                # Get the artist's albums
+                albums_result = self.retry_on_rate_limit(self.sp.artist_albums, artist_id, album_type='album,single', limit=3)
                 
-                # MODIFIED: Prioritize tracks where this artist is the primary artist
-                primary_artist = track['artists'][0] if track['artists'] else None
-                is_primary = primary_artist and primary_artist['id'] == artist_id
-                
-                # Check match score against target genre
-                # First use the simplified track match for speed
-                artist_tup = (artist, artist_genres)
-                matches, score = self.get_simplified_track_match(artist_tup, target_genre)
-                
-                # If the artist is not the primary artist, reduce the score
-                if not is_primary:
-                    score *= 0.8  # 20% penalty for not being primary artist
-                
-                track_info = (track_id, score)
-                
-                # Keep all tracks in a separate list
-                all_tracks.append(track_info)
-                
-                # Add matching tracks to our results list
-                if matches:
-                    matching_tracks.append(track_info)
-                    logging.info(f"Found matching track for '{artist_name}': '{track_name}' (Score: {score:.2f})")
-                    genre_list = [g.lower() for g in artist_genres]
-                    logging.info(f"  - Track genres: {genre_list}")
+                if albums_result and 'items' in albums_result:
+                    for album in albums_result['items'][:3]:  # Limit to 3 albums to avoid too many requests
+                        if len(all_tracks) >= 15:
+                            break
+                            
+                        album_id = album['id']
+                        
+                        # Get tracks from this album
+                        album_tracks = self.retry_on_rate_limit(self.sp.album_tracks, album_id, limit=10)
+                        
+                        if album_tracks and 'items' in album_tracks:
+                            for track in album_tracks['items']:
+                                # Skip if we have enough tracks
+                                if len(all_tracks) >= 15:
+                                    break
+                                    
+                                track_id = track['id']
+                                track_name = track['name']
+                                
+                                # Skip if we already have this track
+                                if any(tid == track_id for tid, _ in all_tracks):
+                                    continue
+                                
+                                # Prioritize tracks where this artist is the primary artist
+                                primary_artist = track['artists'][0] if track['artists'] else None
+                                is_primary = primary_artist and primary_artist['id'] == artist_id
+                                
+                                if not is_primary:
+                                    continue  # Skip tracks where the artist isn't primary
+                                
+                                # Check match score against target genre
+                                artist_tup = (artist, artist_genres)
+                                matches, score = self.get_simplified_track_match(artist_tup, target_genre)
+                                
+                                track_info = (track_id, score)
+                                
+                                # Keep all tracks in a separate list
+                                all_tracks.append(track_info)
+                                
+                                # Add matching tracks to our results list
+                                if matches:
+                                    matching_tracks.append(track_info)
+                                    logging.info(f"Found additional album track for '{artist_name}': '{track_name}' (Score: {score:.2f})")
+            except Exception as e:
+                logging.error(f"Error getting album tracks for {artist_name}: {e}")
         
         # If we have matches, great; otherwise we do best-effort top tracks
         if matching_tracks:
@@ -1360,20 +1434,20 @@ class SpotifyPlaylistManager:
         else:
             logging.warning(f"No genre-matching tracks found for '{artist_name}' in genre '{target_genre}'")
             if all_tracks:
-                # Take top 5 anyway, but artificially adjust scores
+                # Take top 15 anyway, but artificially adjust scores
                 # Prioritize tracks by both popularity and artist match
-                top_5 = sorted(all_tracks, key=lambda x: x[1], reverse=True)[:5]
+                top_15 = sorted(all_tracks, key=lambda x: x[1], reverse=True)[:15]
                 
                 # Apply a more generous score for these tracks to ensure inclusion
                 # but still below direct genre matches
-                matching_tracks = [(tid, min(s + 0.15, 0.65)) for tid, s in top_5]
+                matching_tracks = [(tid, min(s + 0.15, 0.65)) for tid, s in top_15]
                 logging.info(f"Using {len(matching_tracks)} best-effort tracks for '{artist_name}'")
         
         # Sort final results by match score, descending
         matching_tracks.sort(key=lambda x: x[1], reverse=True)
         
-        # Return top 5
-        return matching_tracks[:5]
+        # Return top 15 or whatever we have if less
+        return matching_tracks[:15]
 
     def classify_unmapped_genre(self, genre: str) -> str:
         """
@@ -1584,44 +1658,121 @@ class SpotifyPlaylistManager:
             logging.error(f"Error reading recommendations file: {e}")
             source_artists = set()
 
-        # Genre consolidation mapping remains the same as in previous implementation
+        # UPDATED GENRE CONSOLIDATION - improved mapping with more comprehensive coverage
         genre_consolidation_map = {
             'Rock': [
                 'Rock', 'Alternative Rock', 'Hard Rock', 'Classic Rock', 'Indie Rock', 
                 'Progressive Rock', 'Psychedelic Rock', 'Blues Rock', 'Folk Rock', 
                 'Art Rock', 'Garage Rock', 'Punk Rock', 'Metal', 'Alternative Metal',
-                'Grunge', 'Post-punk', 'Heavy Metal', 'Acid Rock', 'Experimental Rock'
+                'Grunge', 'Post-punk', 'Heavy Metal', 'Acid Rock', 'Experimental Rock',
+                'Rock & Roll', 'Glam Rock', 'Soft Rock', 'Post-Rock', 'Stoner Rock',
+                'Krautrock'
+            ],
+            'Metal': [
+                'Metal', 'Heavy Metal', 'Thrash Metal', 'Death Metal', 'Black Metal',
+                'Doom Metal', 'Progressive Metal', 'Power Metal', 'Gothic Metal',
+                'Alternative Metal', 'Nu Metal', 'Folk Metal', 'Symphonic Metal',
+                'Industrial Metal', 'Metalcore', 'Hardcore', 'Speed Metal',
+                'Sludge Metal', 'Groove Metal'
             ],
             'Pop': [
                 'Pop', 'Indie Pop', 'Synth-pop', 'Dance-pop', 'Alternative Pop', 
-                'Art Pop', 'Electropop', 'Pop Rock', 'Baroque Pop', 'Sophisti-pop'
+                'Art Pop', 'Electropop', 'Pop Rock', 'Baroque Pop', 'Sophisti-pop',
+                'Dream Pop', 'Chamber Pop', 'Jangle Pop', 'Europop', 'K-pop',
+                'J-pop', 'Bubblegum Pop', 'Twee Pop', 'Sunshine Pop', 'Power Pop'
             ],
             'Electronic': [
                 'Electronic', 'House', 'Techno', 'Trance', 'Ambient', 'Dance', 
-                'Drum & Bass', 'Trip Hop', 'Downtempo', 'Electro', 'Breakbeat'
+                'Drum & Bass', 'Trip Hop', 'Downtempo', 'Electro', 'Breakbeat',
+                'IDM', 'EDM', 'Industrial', 'Synthwave', 'Electronica',
+                'Chillwave', 'Dubstep', 'Garage', 'Jungle', 'Vaporwave', 'Glitch',
+                'Big Beat', 'Hardstyle', 'Eurodance', 'Tech House', 'Deep House',
+                'Acid House', 'Progressive House', 'Electro House', 'Minimal Techno',
+                'Acid Techno', 'Detroit Techno', 'Hardcore Techno', 'Psytrance',
+                'Goa Trance', 'Uplifting Trance', 'Progressive Trance'
             ],
             'Hip Hop': [
-                'Hip Hop', 'Rap', 'Trap', 'Alternative Hip Hop', 'Conscious Hip Hop'
+                'Hip Hop', 'Rap', 'Trap', 'Alternative Hip Hop', 'Conscious Hip Hop',
+                'Gangsta Rap', 'Old School Hip Hop', 'Boom Bap', 'Crunk', 'Dirty South',
+                'G-Funk', 'East Coast Hip Hop', 'West Coast Hip Hop', 'Southern Hip Hop',
+                'Underground Hip Hop', 'Abstract Hip Hop', 'Jazz Rap', 'Horrorcore',
+                'Experimental Hip Hop', 'Hip-Hop', 'Grime', 'Drill', 'Mumble Rap'
             ],
             'R&B & Soul': [
                 'R&B', 'Soul', 'Neo Soul', 'Contemporary R&B', 'Funk', 
-                'Pop Soul', 'Smooth Soul', 'Motown'
+                'Pop Soul', 'Smooth Soul', 'Motown', 'Disco', 'Northern Soul',
+                'Rhythm & Blues', 'Rhythm and Blues', 'Blue-Eyed Soul',
+                'Quiet Storm', 'New Jack Swing', 'Gospel', 'Urban', 'Contemporary Soul'
             ],
             'Jazz': [
                 'Jazz', 'Jazz Pop', 'Smooth Jazz', 'Fusion Jazz', 
-                'Bebop', 'Vocal Jazz', 'Contemporary Jazz'
+                'Bebop', 'Vocal Jazz', 'Contemporary Jazz', 'Swing', 'Big Band',
+                'Modal Jazz', 'Free Jazz', 'Cool Jazz', 'Hard Bop', 'Avant-Garde Jazz',
+                'Latin Jazz', 'Soul Jazz', 'Jazz Funk', 'Nu Jazz', 'Jazz Fusion',
+                'Acid Jazz', 'Gypsy Jazz', 'Chamber Jazz', 'Post-Bop'
             ],
             'Folk & Country': [
-                'Folk', 'Country', 'Americana', 'Singer-songwriter', 
-                'Bluegrass', 'Contemporary Folk', 'Folk Rock'
+                'Folk', 'Country', 'Americana', 'Singer-Songwriter', 
+                'Bluegrass', 'Contemporary Folk', 'Folk Rock', 'Country Rock',
+                'Alternative Country', 'Outlaw Country', 'Country Pop', 'Traditional Folk',
+                'British Folk', 'Irish Folk', 'Neofolk', 'Psychedelic Folk', 'Freak Folk',
+                'Progressive Folk', 'Folk Punk', 'Celtic', 'Appalachian', 'Honky Tonk',
+                'Nashville Sound', 'Cowboy', 'Western', 'Traditional Country', 'Folk Revival'
             ],
             'World': [
                 'World', 'Latin', 'Reggae', 'Afrobeat', 'Celtic', 
-                'Traditional', 'Bossa Nova', 'Salsa'
+                'Traditional', 'Bossa Nova', 'Salsa', 'Samba', 'Afro-Pop',
+                'Highlife', 'Fado', 'Flamenco', 'Cumbia', 'Mariachi', 'Tango',
+                'Calypso', 'Tribal', 'Balkan', 'Middle Eastern', 'African',
+                'Asian', 'Caribbean', 'Bollywood', 'Worldbeat', 'Ethnic',
+                'Aboriginal', 'Hawaiian', 'Klezmer', 'Gamelan', 'Zydeco',
+                'Cajun', 'Celtic Folk', 'Ska', 'Dancehall', 'Dub', 'Reggaeton',
+                'World Fusion'
             ],
             'Classical': [
                 'Classical', 'Orchestral', 'Chamber Music', 
-                'Baroque', 'Contemporary Classical', 'Piano'
+                'Baroque', 'Contemporary Classical', 'Piano', 'Opera',
+                'Symphony', 'Concerto', 'Choral', 'Romantic', 'Modern Classical',
+                'Renaissance', 'Medieval', 'Minimalism', 'Neo-Classical',
+                'Post-Classical', 'Avant-Garde Classical', 'Impressionist', 'Violin',
+                'Cello', 'Instrumental', 'Composition', 'String Quartet',
+                'Philharmonic', 'Sonata', 'Classical Piano', 'Classical Guitar'
+            ],
+            'Blues': [
+                'Blues', 'Chicago Blues', 'Delta Blues', 'Electric Blues',
+                'Acoustic Blues', 'Blues Rock', 'Country Blues', 'Soul Blues',
+                'Jazz Blues', 'Contemporary Blues', 'Louisiana Blues',
+                'Piedmont Blues', 'Texas Blues', 'British Blues', 'Rhythm & Blues',
+                'Blues Revival'
+            ],
+            'Punk': [
+                'Punk', 'Punk Rock', 'Hardcore Punk', 'Post-Punk', 'Pop Punk',
+                'Anarcho-Punk', 'Skate Punk', 'Oi!', 'Street Punk', 'Crust Punk',
+                'Garage Punk', 'Horror Punk', 'Proto-Punk', 'Psychobilly',
+                'Celtic Punk', 'Folk Punk', 'Punk Blues', 'Ska Punk', 'Grindcore',
+                'Powerviolence', 'D-Beat'
+            ],
+            'Indie & Alternative': [
+                'Indie', 'Alternative', 'Indie Rock', 'Indie Pop', 'Lo-Fi',
+                'Shoegaze', 'Dream Pop', 'C86', 'Twee Pop', 'College Rock',
+                'Alternative Rock', 'Noise Pop', 'Experimental Rock', 
+                'Post-Rock', 'Math Rock', 'Sadcore', 'Slowcore', 'Britpop',
+                'Madchester', 'Neo-Psychedelia', 'Art Rock', 'Experimental',
+                'No Wave', 'Noise Rock', 'Space Rock'
+            ],
+            'Ambient & Experimental': [
+                'Ambient', 'Chillout', 'Drone', 'Dark Ambient', 'Sound Art',
+                'Field Recordings', 'Musique Concrète', 'Experimental',
+                'Minimalism', 'Noise', 'Sound Collage', 'Lowercase',
+                'New Age', 'Meditation', 'Environmental', 'Space Music',
+                'Atmospheric', 'Neoclassical Ambient', 'Generative',
+                'Soundscape', 'Ambient Techno', 'Ambient House', 'Ambient Dub'
+            ],
+            'Reggae & Dub': [
+                'Reggae', 'Dub', 'Roots Reggae', 'Dancehall', 'Ska',
+                'Rocksteady', 'Lovers Rock', 'Reggae Fusion', 'Ragga',
+                'Dub Poetry', 'Reggaeton', 'Nyabinghi', 'Soca', 'Calypso',
+                'Dub Techno', 'Dubstep', 'Drum & Bass'
             ]
         }
 
@@ -1629,7 +1780,8 @@ class SpotifyPlaylistManager:
         reverse_consolidation_map = {}
         for primary_genre, subgenres in genre_consolidation_map.items():
             for genre in subgenres:
-                reverse_consolidation_map[genre] = primary_genre
+                # Use lowercase for case-insensitive matching
+                reverse_consolidation_map[genre.lower()] = primary_genre
 
         # Track artists used across all playlists to ensure diversity
         used_artists = set()
@@ -1642,41 +1794,93 @@ class SpotifyPlaylistManager:
 
         # Group genres by their consolidated categories
         consolidated_genres = {}
+        
+        # First, collect genres that have exact matches
         for genre, artists in genre_artists.items():
-            # Get the consolidated genre category for this genre
-            consolidated_genre = reverse_consolidation_map.get(genre, genre)
+            # Normalize genre name for consistent matching
+            normalized_genre = genre.lower()
             
+            # Try to find the consolidated genre category for this genre
+            consolidated_genre = None
+            
+            # Check for exact match in our mapping
+            if normalized_genre in reverse_consolidation_map:
+                consolidated_genre = reverse_consolidation_map[normalized_genre]
+                logging.info(f"Exact match: '{genre}' → '{consolidated_genre}'")
+            else:
+                # Try fuzzy matching - check if the genre contains any of our known genres
+                for known_genre, primary in reverse_consolidation_map.items():
+                    # Skip very short subgenres to avoid false matches
+                    if len(known_genre) < 4:
+                        continue
+                    
+                    # Check if known genre is a significant substring of our genre
+                    if known_genre in normalized_genre:
+                        consolidated_genre = primary
+                        logging.info(f"Fuzzy match: '{genre}' → '{consolidated_genre}' (contains '{known_genre}')")
+                        break
+                
+                # If still no match, try to find key terms that might indicate the genre
+                if not consolidated_genre:
+                    for primary_genre, terms in genre_consolidation_map.items():
+                        # Create a list of key terms from the genre list
+                        key_terms = set()
+                        for term in terms:
+                            words = term.lower().split()
+                            for word in words:
+                                if len(word) > 3:  # Only use significant words
+                                    key_terms.add(word)
+                        
+                        # Check if any key terms are in our genre name
+                        genre_words = set(normalized_genre.split())
+                        if any(word in key_terms for word in genre_words):
+                            consolidated_genre = primary_genre
+                            logging.info(f"Term match: '{genre}' → '{consolidated_genre}'")
+                            break
+                
+                # If still no match, use a fallback category based on best guess
+                if not consolidated_genre:
+                    consolidated_genre = "Miscellaneous"
+                    logging.info(f"No match found for '{genre}', using 'Miscellaneous'")
+            
+            # Add the artists to the consolidated genre
             if consolidated_genre not in consolidated_genres:
                 consolidated_genres[consolidated_genre] = []
             
-            # Add all artists from this genre to the consolidated genre
+            # Add artists to consolidated genre
             consolidated_genres[consolidated_genre].extend(artists)
         
         # Remove duplicates from each consolidated genre's artist list
         for genre in consolidated_genres:
             consolidated_genres[genre] = list(set(consolidated_genres[genre]))
-            
-        # Get the actual number of consolidated genres for correct progress tracking
-        total_consolidated_genres = len(consolidated_genres)
-        processed_genres = 0
         
-        logging.info(f"Consolidated {len(genre_artists)} genres into {total_consolidated_genres} genre categories")
-
-        # Process artists by genre
-        def process_genre_artists(genre, all_artists):
-            """
-            Process artists for a specific genre, ensuring diversity.
+        # Get the actual number of consolidated genres for progress tracking
+        total_consolidated_genres = len(consolidated_genres)
+        
+        # Log the consolidation results for clarity
+        logging.info(f"Original genres count: {len(genre_artists)}")
+        logging.info(f"Consolidated into {total_consolidated_genres} genre categories")
+        
+        for genre, artists in consolidated_genres.items():
+            logging.info(f"Consolidated genre '{genre}': {len(artists)} artists")
+        
+        # Create a list for processing to ensure consistent ordering
+        genres_to_process = list(consolidated_genres.items())
+        
+        # Collect all tracks for each genre to assess total counts
+        genre_tracks_collection = {}
+        
+        # Process consolidated genres
+        for i, (genre, genre_specific_artists) in enumerate(genres_to_process, 1):
+            # Update progress tracking with correct counters
+            progress_percentage = int((i / total_consolidated_genres) * 100)
+            logging.info(f"Processing: {progress_percentage}% ({i}/{total_consolidated_genres} genres)")
             
-            Args:
-                genre (str): Genre to process
-                all_artists (List[str]): List of artists in the genre
+            logging.info(f"Processing genre: {genre} with {len(genre_specific_artists)} artists")
             
-            Returns:
-                Dict[str, List[str]]: Mapping of artists to their track URIs
-            """
             # Filter out source and previously used artists
             available_artists = [
-                artist for artist in all_artists 
+                artist for artist in genre_specific_artists 
                 if artist not in source_artists and artist not in used_artists
             ]
 
@@ -1707,15 +1911,57 @@ class SpotifyPlaylistManager:
                         continue
 
                     artist_id = items[0]['id']
-                    top_tracks = self.sp.artist_top_tracks(artist_id, country='US').get('tracks', [])
+
+                    # MODIFIED: Get tracks using multiple methods to get up to 15 tracks
+                    all_tracks = []
                     
-                    # Take up to 5 top tracks from each artist
-                    num_tracks = min(5, len(top_tracks))
+                    # Method 1: Get up to 10 top tracks (Spotify API limit)
+                    top_tracks = self.sp.artist_top_tracks(artist_id, country='US').get('tracks', [])
+                    if top_tracks:
+                        top_track_uris = [track['uri'] for track in top_tracks]
+                        all_tracks.extend(top_track_uris)
+                    
+                    # Method 2: If we need more tracks, get from albums
+                    if len(all_tracks) < 15:
+                        try:
+                            # Get albums
+                            albums = self.sp.artist_albums(artist_id, album_type='album,single', limit=3)
+                            album_items = albums.get('items', []) if albums else []
+                            
+                            for album in album_items:
+                                if len(all_tracks) >= 15:
+                                    break
+                                    
+                                album_id = album['id']
+                                album_tracks = self.sp.album_tracks(album_id, limit=15)
+                                album_track_items = album_tracks.get('items', []) if album_tracks else []
+                                
+                                for track in album_track_items:
+                                    if len(all_tracks) >= 15:
+                                        break
+                                        
+                                    track_uri = track['uri']
+                                    
+                                    # Skip if already have this track
+                                    if track_uri in all_tracks:
+                                        continue
+                                    
+                                    # Only include tracks where this artist is primary
+                                    primary_artist = track['artists'][0] if track['artists'] else None
+                                    is_primary = primary_artist and primary_artist['id'] == artist_id
+                                    
+                                    if is_primary:
+                                        all_tracks.append(track_uri)
+                        except Exception as album_error:
+                            logging.warning(f"Error getting album tracks for '{artist}': {album_error}")
+                    
+                    # Take up to 15 tracks total
+                    num_tracks = min(15, len(all_tracks))
                     if num_tracks == 0:
                         logging.warning(f"No tracks found for artist '{artist}'")
                         continue
                         
-                    uris = [track['uri'] for track in top_tracks[:num_tracks]]
+                    uris = all_tracks[:num_tracks]
                     
                     # Store tracks and mark artist as used
                     if uris:
@@ -1728,23 +1974,6 @@ class SpotifyPlaylistManager:
 
                 except Exception as e:
                     logging.error(f"Failed to process artist '{artist}': {e}")
-
-            return artist_track_mapping
-
-        # Collect all tracks for each genre to assess total counts
-        genre_tracks_collection = {}
-        
-        # Process consolidated genres
-        for genre, genre_specific_artists in consolidated_genres.items():
-            # Update progress tracking with the correct denominator (total_consolidated_genres)
-            processed_genres += 1
-            progress_percentage = int((processed_genres / total_consolidated_genres) * 100)
-            logging.info(f"Processing: {progress_percentage}% ({processed_genres}/{total_consolidated_genres} genres)")
-            
-            logging.info(f"Processing genre: {genre} with {len(genre_specific_artists)} artists")
-            
-            # Get tracks for this genre
-            artist_track_mapping = process_genre_artists(genre, genre_specific_artists)
 
             # Skip if no tracks found
             if not artist_track_mapping:

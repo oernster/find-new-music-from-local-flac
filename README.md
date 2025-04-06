@@ -1,4 +1,4 @@
-# GenreGenius version 1.0.1
+# GenreGenius version 1.0.3
 
 - Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
 - (currently only supported on Windows)
