@@ -337,74 +337,74 @@ class FlacLibraryScanner(MusicLibraryScanner):
                     skipped_files += 1
                     if "not a valid file" not in str(e).lower():
                         print(f"{Fore.RED}Error processing {file}: {e}{Style.RESET_ALL}")
-        
-        # Second pass: Use MusicBrainz for compilations with missing artists
-        try:
-            # Initialize MusicBrainz API
-            from musicbrainz import MusicBrainzAPI
-            mb_api = MusicBrainzAPI()
             
-            # Process each compilation album
-            for album_name, track_artists in compilation_albums.items():
-                # Skip albums where we already have artists
-                if track_artists:
-                    print(f"{Fore.GREEN}Album '{album_name}' already has {len(track_artists)} artists from file tags{Style.RESET_ALL}")
-                    continue
+            # Second pass: Use MusicBrainz for compilations with missing artists
+            try:
+                # Initialize MusicBrainz API
+                from musicbrainz import MusicBrainzAPI
+                mb_api = MusicBrainzAPI()
+                
+                # Process each compilation album
+                for album_name, track_artists in compilation_albums.items():
+                    # Skip albums where we already have artists
+                    if track_artists:
+                        print(f"{Fore.GREEN}Album '{album_name}' already has {len(track_artists)} artists from file tags{Style.RESET_ALL}")
+                        continue
+                        
+                    print(f"{Fore.YELLOW}Album '{album_name}' has no artists from tags, using MusicBrainz lookup{Style.RESET_ALL}")
                     
-                print(f"{Fore.YELLOW}Album '{album_name}' has no artists from tags, using MusicBrainz lookup{Style.RESET_ALL}")
-                
-                # Use MusicBrainz to look up album artists
-                mb_artists = mb_api.get_album_artists(album_name)
-                
-                # Add the artists to our lists
-                for artist in mb_artists:
-                    if artist.lower() not in ('various artists', 'various', 'va', 'v.a.'):
-                        artists.append(artist)
-                        track_artists.add(artist)
-                
-                print(f"{Fore.GREEN}Added {len(mb_artists)} artists from MusicBrainz for album '{album_name}'{Style.RESET_ALL}")
-                
-                # Respect API rate limits
-                time.sleep(2)
+                    # Use MusicBrainz to look up album artists
+                    mb_artists = mb_api.get_album_artists(album_name)
                     
-        except Exception as e:
-            print(f"{Fore.RED}Error using MusicBrainz: {e}{Style.RESET_ALL}")
-        
-        # Count occurrences of each artist and sort by frequency
-        artist_counter = Counter(artists)
-        
-        # Filter out Various Artists entries and other common compilation placeholders
-        for va in ('various artists', 'various', 'va', 'v.a.', 'soundtrack', 'original soundtrack'):
-            if va in artist_counter:
-                del artist_counter[va]
-        
-        # Filter to include only artists with at least min_artist_count songs
-        filtered_artists = {artist: count for artist, count in artist_counter.items() 
-                           if count >= self.min_artist_count}
-        
-        sorted_artists = sorted(filtered_artists.items(), key=lambda x: x[1], reverse=True)
-        
-        print(f"{Fore.GREEN}Found {len(sorted_artists)} unique artists in {processed_files} valid audio files.{Style.RESET_ALL}")
-        
-        if sorted_artists:
-            # Show sample artists for validation
-            print(f"{Fore.GREEN}Sample artists in library: {', '.join([a[0] for a in sorted_artists[:5]])}{Style.RESET_ALL}")
+                    # Add the artists to our lists
+                    for artist in mb_artists:
+                        if artist.lower() not in ('various artists', 'various', 'va', 'v.a.'):
+                            artists.append(artist)
+                            track_artists.add(artist)
+                    
+                    print(f"{Fore.GREEN}Added {len(mb_artists)} artists from MusicBrainz for album '{album_name}'{Style.RESET_ALL}")
+                    
+                    # Respect API rate limits
+                    time.sleep(2)
+                        
+            except Exception as e:
+                print(f"{Fore.RED}Error using MusicBrainz: {e}{Style.RESET_ALL}")
             
-            print(f"{Fore.GREEN}Top 10 artists: {', '.join([a[0] for a in sorted_artists[:10]])}{Style.RESET_ALL}")
-        
-        if skipped_files > 0:
-            print(f"{Fore.YELLOW}Skipped {skipped_files} invalid or problematic files.{Style.RESET_ALL}")
+            # Count occurrences of each artist and sort by frequency
+            artist_counter = Counter(artists)
             
-        # Store compilation albums for later use
-        self.compilation_albums = compilation_albums
-        
-        print(f"{Fore.GREEN}Returning all {len(sorted_artists)} artists{Style.RESET_ALL}")
-        return sorted_artists
+            # Filter out Various Artists entries and other common compilation placeholders
+            for va in ('various artists', 'various', 'va', 'v.a.', 'soundtrack', 'original soundtrack'):
+                if va in artist_counter:
+                    del artist_counter[va]
+            
+            # Filter to include only artists with at least min_artist_count songs
+            filtered_artists = {artist: count for artist, count in artist_counter.items() 
+                               if count >= self.min_artist_count}
+            
+            sorted_artists = sorted(filtered_artists.items(), key=lambda x: x[1], reverse=True)
+            
+            print(f"{Fore.GREEN}Found {len(sorted_artists)} unique artists in {processed_files} valid audio files.{Style.RESET_ALL}")
+            
+            if sorted_artists:
+                # Show sample artists for validation
+                print(f"{Fore.GREEN}Sample artists in library: {', '.join([a[0] for a in sorted_artists[:5]])}{Style.RESET_ALL}")
+                
+                print(f"{Fore.GREEN}Top 10 artists: {', '.join([a[0] for a in sorted_artists[:10]])}{Style.RESET_ALL}")
+            
+            if skipped_files > 0:
+                print(f"{Fore.YELLOW}Skipped {skipped_files} invalid or problematic files.{Style.RESET_ALL}")
+                
+            # Store compilation albums for later use
+            self.compilation_albums = compilation_albums
+            
+            print(f"{Fore.GREEN}Returning all {len(sorted_artists)} artists{Style.RESET_ALL}")
+            return sorted_artists
     
     def scan(self) -> List[Tuple[str, int]]:
         """
         Scan the music library for audio files and extract artists.
-        Enhanced with MusicBrainz lookup for Various Artists compilations.
+        Enhanced with directory-based artist extraction.
 
         Returns:
             List[Tuple[str, int]]: List of (artist_name, count) tuples
@@ -413,87 +413,70 @@ class FlacLibraryScanner(MusicLibraryScanner):
         artists = []
         processed_files = 0
         skipped_files = 0
-        various_artists_albums = {}  # Changed to dict to store album name
 
-        # Initialize MusicBrainz API for album lookups
+        # Comprehensive list of audio file extensions
+        AUDIO_EXTENSIONS = [
+            # Lossless formats
+            '.flac', '.alac', '.wav', '.aiff', '.aif', '.aifc', 
+            '.wv',   # WavPack
+            '.ape',  # Monkey's Audio
+            '.tak',  # Tom's lossless Audio Kompressor
+            
+            # Lossy formats
+            '.mp3', '.m4a', '.aac', '.ogg', '.opus', 
+            '.wma', '.webm', 
+            
+            # Less common formats
+            '.ac3', '.mka',  # Matroska Audio
+            '.ra', '.ram',   # RealAudio
+            '.mid', '.midi', # MIDI files
+            '.caf'           # Apple Core Audio Format
+        ]
+
+        # Various Artists indicators
+        VARIOUS_ARTISTS_INDICATORS = (
+            'various artists', 'various', 'va', 'v.a.', 
+            'compilation', 'soundtrack', 'ost'
+        )
+
         try:
-            from musicbrainz import MusicBrainzAPI
-            mb_api = MusicBrainzAPI()
-            musicbrainz_available = True
-            print(f"{Fore.GREEN}MusicBrainz API initialized for album lookups{Style.RESET_ALL}")
-        except Exception as e:
-            musicbrainz_available = False
-            print(f"{Fore.YELLOW}MusicBrainz API not available: {e}. Various Artists processing will use file tags only.{Style.RESET_ALL}")
-
-        try:
-            # Comprehensive list of audio file extensions
-            AUDIO_EXTENSIONS = [
-                # Lossless formats
-                '.flac', '.alac', '.wav', '.aiff', '.aif', '.aifc', 
-                '.wv',   # WavPack
-                '.ape',  # Monkey's Audio
-                '.tak',  # Tom's lossless Audio Kompressor
-                
-                # Lossy formats
-                '.mp3', '.m4a', '.aac', '.ogg', '.opus', 
-                '.wma', '.webm', 
-                
-                # Less common formats
-                '.ac3', '.mka',  # Matroska Audio
-                '.ra', '.ram',   # RealAudio
-                '.mid', '.midi', # MIDI files
-                '.caf'           # Apple Core Audio Format
-            ]
-
-            # First pass: identify Various Artists compilations and store album names
+            # Scan the entire music directory
             for root, _, files in os.walk(self.music_dir):
+                # Filter audio files
                 audio_files = [f for f in files if any(f.lower().endswith(ext) for ext in AUDIO_EXTENSIONS)]
+                
                 if not audio_files:
                     continue
-                    
-                for file in audio_files:
-                    try:
-                        file_path = os.path.join(root, file)
-                        
-                        # Check for Various Artists in directory or filename
-                        if "various artists" in file_path.lower():
-                            various_artists_albums[root] = os.path.basename(root)
-                            print(f"{Fore.CYAN}Found Various Artists album in: {file_path}{Style.RESET_ALL}")
-                        
-                    except Exception as e:
-                        print(f"{Fore.RED}Error processing {file}: {e}{Style.RESET_ALL}")
-
-            # Second pass: extract actual artists
-            for root, _, files in os.walk(self.music_dir):
-                audio_files = [f for f in files if any(f.lower().endswith(ext) for ext in AUDIO_EXTENSIONS)]
                 
                 for file in audio_files:
                     try:
                         file_path = os.path.join(root, file)
                         
-                        # Skip small files
+                        # Skip very small files
                         if os.path.getsize(file_path) < 128:
                             skipped_files += 1
                             continue
                         
                         processed_files += 1
                         
-                        # If in a Various Artists directory, use directory for artist extraction logic
-                        if root in various_artists_albums:
-                            # Extract artist from directory structure or filename
-                            artist_from_path = os.path.basename(os.path.dirname(file_path))
-                            if artist_from_path and artist_from_path.lower() not in ('various artists', 'various', 'va', 'v.a.'):
-                                artists.append(artist_from_path)
-                        else:
-                            # Extract artist from parent directory
-                            artist_from_dir = os.path.basename(os.path.dirname(file_path))
-                            if artist_from_dir and artist_from_dir.lower() not in ('various artists', 'various', 'va', 'v.a.'):
-                                artists.append(artist_from_dir)
+                        # Extract artist from directory structure
+                        # Look back two levels: artist directory is typically parent of album directory
+                        path_parts = Path(file_path).parts
                         
+                        # Determine potential artist name
+                        if len(path_parts) >= 3:
+                            potential_artist = path_parts[-3]
+                            
+                            # Skip if potential artist is a Various Artists indicator
+                            if not any(indicator in potential_artist.lower() for indicator in VARIOUS_ARTISTS_INDICATORS):
+                                # Only add if it's a meaningful artist name
+                                if potential_artist and len(potential_artist) > 1:
+                                    artists.append(potential_artist)
+                    
                     except Exception as e:
                         skipped_files += 1
                         print(f"{Fore.RED}Error processing {file}: {e}{Style.RESET_ALL}")
-        
+
         except Exception as e:
             print(f"{Fore.RED}Error scanning directory: {e}{Style.RESET_ALL}")
 
@@ -501,7 +484,7 @@ class FlacLibraryScanner(MusicLibraryScanner):
         artist_counter = Counter(artists)
 
         # Filter out Various Artists entries and other common compilation placeholders
-        for va in ('various artists', 'various', 'va', 'v.a.', 'soundtrack', 'original soundtrack'):
+        for va in VARIOUS_ARTISTS_INDICATORS:
             if va in artist_counter:
                 del artist_counter[va]
 
