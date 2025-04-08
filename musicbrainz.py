@@ -322,7 +322,10 @@ class MusicBrainzAPI(MusicDatabase):
             query = f'release:"{album_name}" AND artist:"{artist_name}"'
         else:
             # For Various Artists or unknown artist
-            query = f'release:"{album_name}"'
+            if artist_name and artist_name.lower() not in ('various artists', 'various', 'va', 'v.a.'):
+                query = f'artist:"{artist_name}" AND release:"{album_name}"' 
+            else:
+                query = f'artist:"Various Artists" AND release:"{album_name}"'
         
         params = {
             'query': query,

@@ -165,10 +165,34 @@ class SpotifyPlaylistManager:
     request_delay = 1.2  # Minimum delay between consecutive Spotify API requests
     musicbrainz_delay = 2.0  # Minimum delay between consecutive MusicBrainz API requests
 
-    def __init__(self):
-        """Initialize the Spotify Playlist Manager."""
+    def __init__(self, client_id=None, client_secret=None, mb_email=None):
+        """
+        Initialize the Spotify Playlist Manager with optional custom API credentials.
+        
+        Args:
+            client_id (str, optional): Spotify API client ID, defaults to hardcoded value if None
+            client_secret (str, optional): Spotify API client secret, defaults to hardcoded value if None
+            mb_email (str, optional): MusicBrainz email for API requests, defaults to DEFAULT_EMAIL if None
+        """
+        # Store API credentials
+        self.client_id = client_id or "your client id"
+        self.client_secret = client_secret or "your client secret"
+        self.mb_email = mb_email or DEFAULT_EMAIL
+        
+        # Log API settings
+        if client_id:
+            logging.info(f"Using custom Spotify Client ID: {self.client_id[:5]}...")
+        if client_secret:
+            logging.info("Using custom Spotify Client Secret")
+        if mb_email:
+            logging.info(f"Using custom MusicBrainz email: {self.mb_email}")
+            
+        # Initialize Spotify client
         self.sp = self.create_spotify_client()
-        self.mb = MusicBrainzAPI()  # Initialize MusicBrainz API client
+        
+        # Initialize MusicBrainz API client with custom email if provided
+        self.mb = MusicBrainzAPI(user_email=self.mb_email)
+        
         self.last_mb_request_time = 0  # Track time of last MusicBrainz API request
         self.artist_genre_cache = {}  # Cache to store artist genre mappings
         self.total_keys = 0
@@ -193,7 +217,6 @@ class SpotifyPlaylistManager:
         """
         try:
             # Use comprehensive scopes to ensure we have all needed permissions
-            # In the create_spotify_client method, update the scopes list:
             scopes = [
                 "playlist-modify-public",
                 "playlist-modify-private", 
@@ -204,8 +227,8 @@ class SpotifyPlaylistManager:
             ]
             
             auth_manager = SpotifyOAuth(
-                client_id="your client id",
-                client_secret="your client secret",
+                client_id=self.client_id,
+                client_secret=self.client_secret,
                 redirect_uri="http://127.0.0.1:8888/callback",
                 scope=" ".join(scopes),
                 cache_path=".spotify_token_cache"  # Cache token to avoid repeated auth
@@ -2400,10 +2423,25 @@ class SpotifyPlaylistManager:
 
 def main() -> None:
     """Main entry point for the Spotify Client application."""
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Spotify Client for creating playlists based on recommendations')
+    parser.add_argument('--client-id', dest='client_id', help='Spotify API Client ID')
+    parser.add_argument('--client-secret', dest='client_secret', help='Spotify API Client Secret')
+    parser.add_argument('--mb-email', dest='mb_email', help='MusicBrainz Email Address')
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    # Setup logging
     setup_logging()
 
     try:
-        manager = SpotifyPlaylistManager()
+        # Initialize with custom settings if provided
+        manager = SpotifyPlaylistManager(
+            client_id=args.client_id,
+            client_secret=args.client_secret,
+            mb_email=args.mb_email
+        )
 
         file_path = get_recommendations_path_from_config()
         logging.info(f"Using recommendations file: {file_path}")

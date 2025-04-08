@@ -2,6 +2,7 @@
 Music Discovery module for finding new artists based on your FLAC library.
 """
 
+import traceback
 import argparse
 import json
 import time
@@ -31,7 +32,7 @@ init(autoreset=True)
 
 # Constants
 DEFAULT_RECOMMENDATION_LIMIT = 50
-DEFAULT_EMAIL = "oliverjernster@hotmail.com"  # Default email for MusicBrainz API
+DEFAULT_EMAIL = "your email"  # Default email for MusicBrainz API
 
 
 class JsonFilePersistence:
@@ -60,20 +61,40 @@ class JsonFilePersistence:
             # Create the directory if it doesn't exist
             os.makedirs(os.path.dirname(os.path.abspath(self.output_file)), exist_ok=True)
             
-            # Ensure no duplicate recommendations exist before saving
-            deduplicated_recommendations = {}
+            # Filter out invalid source artists and their recommendations
+            filtered_recommendations = {}
+            for artist, recs in recommendations.items():
+                # Skip if artist name is invalid or empty
+                if not artist or should_exclude_artist(artist):
+                    print(f"{Fore.YELLOW}Excluding invalid source artist: {artist}{Style.RESET_ALL}")
+                    continue
+                
+                # Filter out invalid recommended artists
+                valid_recs = [
+                    rec for rec in recs 
+                    if rec and not should_exclude_artist(rec)
+                ]
+                
+                # Only add if there are valid recommendations
+                if valid_recs:
+                    filtered_recommendations[artist] = valid_recs
             
-            for artist, similar_artists in recommendations.items():
-                # Convert to a dict and back to a list to remove any duplicates
-                unique_artists = list(dict.fromkeys(similar_artists))
-                deduplicated_recommendations[artist] = unique_artists
-            
+            # Save the filtered recommendations
             with open(self.output_file, 'w', encoding='utf-8') as f:
-                json.dump(deduplicated_recommendations, f, indent=2)
+                json.dump(filtered_recommendations, f, indent=2)
+            
             print(f"\n{Fore.GREEN}Recommendations saved to {self.output_file}{Style.RESET_ALL}")
+            
+            # Print summary of saved recommendations
+            total_source_artists = len(filtered_recommendations)
+            total_recommendations = sum(len(recs) for recs in filtered_recommendations.values())
+            print(f"{Fore.CYAN}Total source artists with recommendations: {total_source_artists}{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}Total recommended artists: {total_recommendations}{Style.RESET_ALL}")
+            
         except Exception as e:
             print(f"{Fore.RED}Error saving recommendations: {e}{Style.RESET_ALL}")
-
+            print(f"{Fore.RED}Traceback: {traceback.format_exc()}{Style.RESET_ALL}")
+            
 
 def create_comprehensive_library_exclusion_set(library_artists: Set[str]) -> Set[str]:
     """
@@ -464,7 +485,13 @@ class MusicDiscoveryApp:
         if max_source_artists is not None:
             library_artists = library_artists[:max_source_artists]
             
-        # Extract artist names from library_artists
+        # Filter out invalid artists during extraction
+        library_artists = [
+            (artist, count) for artist, count in library_artists 
+            if not should_exclude_artist(artist)
+        ]
+        
+        # Extract artist names from filtered library_artists
         library_artist_names = {artist for artist, _ in library_artists}
         
         # Phase 2: Generate recommendations
@@ -481,7 +508,12 @@ class MusicDiscoveryApp:
         )
         
         # Phase 2.5: Process compilation albums for additional recommendations
+        # Add an explicit delimiter that's easier to find in logs
+        print(f"{Fore.CYAN}###################################################{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}RESET_PROGRESS_BAR_NOW - VARIOUS_ARTISTS_PROCESSING{Style.RESET_ALL}")
         print(f"{Fore.CYAN}Phase 2.5: Processing compilation albums for additional recommendations{Style.RESET_ALL}")
+        print(f"Progress: 0% (0/0 compilation albums)")
+        print(f"{Fore.CYAN}###################################################{Style.RESET_ALL}")
         
         # Use the new method to process compilations, passing library artist names
         updated_recommendations = self.process_compilations(recommendations, library_artist_names)
@@ -510,6 +542,8 @@ class MusicDiscoveryApp:
             Dict[str, List[str]]: Updated recommendations including compilation artists
         """
         print(f"{Fore.CYAN}Processing compilation albums for additional recommendations...{Style.RESET_ALL}")
+        
+        additional_recommendations = {}
         
         # Get compilation albums from the scanner if available
         compilation_albums = {}
@@ -546,13 +580,25 @@ class MusicDiscoveryApp:
         # Create a set of normalized library artist names for quick lookup
         library_artists_normalized = {normalize_artist_name(artist) for artist in library_artist_names}
         
-        # Process each compilation album
+        # Setup and report progress tracking for compilation albums (specific format for ScriptWorker)
+        total_albums = len(compilation_albums)
         albums_processed = 0
-        artists_processed = 0
         
+        # First print 0% progress with distinctive format
+        print(f"Progress: 0% (0/{total_albums} compilation albums)")
+        
+        # Process each compilation album
         for album_name, album_artists in compilation_albums.items():
+            # Update progress tracking for each album
+            albums_processed += 1
+            progress_percent = (albums_processed / total_albums) * 100
+            
+            # Use consistent format for progress reporting
+            print(f"Progress: {progress_percent:.1f}% ({albums_processed}/{total_albums} compilation albums)")
+            
             try:
-                print(f"{Fore.CYAN}Processing album: {album_name}{Style.RESET_ALL}")
+                # Specific log format for album processing that will update the status text
+                print(f"{Fore.CYAN}Processing compilation album: {album_name}{Style.RESET_ALL}")
                 
                 # Skip albums with no artists - we'll use MusicBrainz instead
                 if not album_artists:
@@ -564,7 +610,8 @@ class MusicDiscoveryApp:
                     print(f"{Fore.GREEN}Found {len(album_artists)} artists via MusicBrainz for '{album_name}'{Style.RESET_ALL}")
                 
                 # Process each artist from the compilation
-                for artist in album_artists:
+                artist_count = len(album_artists)
+                for i, artist in enumerate(album_artists, 1):
                     # Skip if already in existing recommendations
                     if artist in existing_artists:
                         print(f"{Fore.YELLOW}Artist '{artist}' already in recommendations. Skipping.{Style.RESET_ALL}")
@@ -602,22 +649,23 @@ class MusicDiscoveryApp:
                             if name and normalize_artist_name(name) not in library_artists_normalized
                         ]
                         
-                        # Add the recommendations
+                        # Store recommendations if found
                         if similar_artist_names:
                             updated_recommendations[artist] = similar_artist_names
+                            # Use a specific format that will be detected to update the status
                             print(f"{Fore.GREEN}Added {len(similar_artist_names)} recommendations for '{artist}' from compilation{Style.RESET_ALL}")
-                            artists_processed += 1
-                        
-                        # Respect rate limits
-                        time.sleep(2)
                         
                     except Exception as e:
                         print(f"{Fore.RED}Error processing artist '{artist}': {e}{Style.RESET_ALL}")
-                
-                albums_processed += 1
-                
+                    
+                    # Respect rate limits
+                    time.sleep(2)
+            
             except Exception as e:
                 print(f"{Fore.RED}Error processing album '{album_name}': {e}{Style.RESET_ALL}")
+        
+        # Print final progress - ensure it shows 100%
+        print(f"Progress: 100.0% ({total_albums}/{total_albums} compilation albums)")
         
         # Print summary
         new_recommendations = len(updated_recommendations) - len(existing_recommendations)
@@ -625,7 +673,7 @@ class MusicDiscoveryApp:
         print(f"{Fore.GREEN}Added {new_recommendations} new artists with recommendations{Style.RESET_ALL}")
         
         return updated_recommendations
-    
+        
     def generate_recommendations_from_compilations(self, library_artists: List[Tuple[str, int]], various_artists_albums: Dict[str, str]) -> Dict[str, List[str]]:
         """
         Generate additional recommendations from compilation albums.
@@ -760,65 +808,316 @@ def browse_directory() -> Optional[str]:
     return directory if directory else None
 
 
-def main():
-    """Main entry point for the application."""
-    print_banner()
+def find_flac_files(directory):
+    """
+    Find all FLAC files in a directory recursively.
     
-    # Parse arguments
-    parser = argparse.ArgumentParser(description='Discover new music')
-    parser.add_argument('--dir', type=str, help='Directory with music files')
-    parser.add_argument('--output', type=str, default='./recommendations.json')
-    parser.add_argument('--email', type=str, default=DEFAULT_EMAIL)
-    parser.add_argument('--max-artists', type=int, default=None, 
-                       help='Maximum number of artists to process (leave empty for entire library)')
-    parser.add_argument('--save-in-music-dir', action='store_true', 
-                       help='Save recommendations.json in the music directory')
+    Args:
+        directory (str): Path to search for FLAC files
+        
+    Returns:
+        list: List of paths to FLAC files
+    """
+    flac_files = []
+    
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.lower().endswith('.flac'):
+                flac_path = os.path.join(root, file)
+                flac_files.append(flac_path)
+    
+    return flac_files
+    
+def extract_artists_from_flac(flac_files):
+    """
+    Extract unique artists from FLAC metadata.
+    
+    Args:
+        flac_files (list): List of paths to FLAC files
+        
+    Returns:
+        set: Set of unique artist names
+    """
+    artists = set()
+    valid_files = 0
+    
+    for file_path in flac_files:
+        try:
+            # Skip invalid files
+            if os.path.getsize(file_path) < 128:
+                continue
+                
+            # Read the FLAC file using mutagen
+            from mutagen.flac import FLAC
+            audio = FLAC(file_path)
+            
+            if 'artist' in audio:
+                for artist in audio['artist']:
+                    if artist.lower() not in ('various artists', 'various', 'va', 'v.a.'):
+                        artists.add(artist)
+            
+            valid_files += 1
+        except Exception as e:
+            print(f"Error processing {file_path}: {e}")
+    
+    print(f"Found {len(artists)} unique artists in {valid_files} valid FLAC files.")
+    return artists
 
+
+def organize_artists_by_directory(flac_files):
+    """
+    Organize artists by directory for better structured processing.
+    Uses the directory structure to correctly identify artists, not albums.
+    
+    Args:
+        flac_files (list): List of paths to FLAC files
+        
+    Returns:
+        dict: Dictionary mapping artist names to lists of file paths
+    """
+    artist_directories = {}
+    
+    # Track potential artist directories
+    potential_artist_dirs = {}
+    
+    # First pass: Analyze directory structure to identify artist directories
+    for file_path in flac_files:
+        # Get file path components
+        path_components = Path(file_path).parts
+        
+        # Need at least 3 components: drive/root, artist, album
+        if len(path_components) >= 3:
+            # Potential artist is usually 2 levels up from the file
+            # Example: H:/music/Artist/Album/track.flac
+            potential_artist = path_components[-3]  # Artist
+            album_dir = path_components[-2]  # Album
+            
+            # Skip if either directory is "Various Artists"
+            if (potential_artist.lower() in ('various artists', 'various', 'va', 'v.a.') or
+                album_dir.lower() in ('various artists', 'various', 'va', 'v.a.')):
+                continue
+            
+            # Track this potential artist directory and its albums
+            if potential_artist not in potential_artist_dirs:
+                potential_artist_dirs[potential_artist] = set()
+            
+            potential_artist_dirs[potential_artist].add(album_dir)
+    
+    # Second pass: Organize files by artist, now that we've identified valid artists
+    for file_path in flac_files:
+        path_components = Path(file_path).parts
+        
+        # Handle files at least 3 components deep
+        if len(path_components) >= 3:
+            potential_artist = path_components[-3]  # Artist
+            
+            # If this is a directory we've identified as an artist
+            if potential_artist in potential_artist_dirs and len(potential_artist_dirs[potential_artist]) > 0:
+                if potential_artist not in artist_directories:
+                    artist_directories[potential_artist] = []
+                
+                artist_directories[potential_artist].append(file_path)
+    
+    return artist_directories
+    
+
+def process_music_library(music_dir, mb_email=DEFAULT_EMAIL):
+    """
+    Process the music library to find similar artists.
+    
+    Args:
+        music_dir (str): Path to the music directory
+        mb_email (str): Email to use for MusicBrainz API requests
+        
+    Returns:
+        dict: Dictionary mapping source artists to lists of recommended artists
+    """
+    # Initialize MusicBrainz API with the provided email
+    mb_api = MusicBrainzAPI(user_email=mb_email)
+    
+    # Find all FLAC files in the directory
+    flac_files = find_flac_files(music_dir)
+    
+    if not flac_files:
+        print(f"No FLAC files found in {music_dir}. Please check the directory.")
+        return {}
+    
+    print(f"Found {len(flac_files)} FLAC files to analyze.")
+    
+    # Extract unique artists from FLAC metadata
+    metadata_artists = extract_artists_from_flac(flac_files)
+    
+    if not metadata_artists:
+        print("No artists found in FLAC metadata.")
+        return {}
+    
+    print(f"Found {len(metadata_artists)} unique artists in FLAC metadata.")
+    
+    # Get recommendations for each artist
+    recommendations = {}
+    
+    # First pass - group artists by directory structure
+    # This will identify artists based on directory structure, not just immediate parent dir
+    artist_directories = organize_artists_by_directory(flac_files)
+    
+    # Print the identified artists from directory structure
+    directory_artists = set(artist_directories.keys())
+    print(f"Identified {len(directory_artists)} artists from directory structure.")
+    if directory_artists:
+        print(f"Sample artists from directory structure: {list(directory_artists)[:5]}")
+    
+    # Process artists by directory structure first
+    total_artists = len(directory_artists)
+    processed_artists = 0
+    
+    for artist_name, file_list in artist_directories.items():
+        processed_artists += 1
+        percentage = (processed_artists / total_artists) * 100 if total_artists > 0 else 100
+        
+        # Progress indicator for first cycle
+        print(f"Progress: {percentage:.1f}% ({processed_artists}/{total_artists} artists)")
+        
+        print(f"=== PROCESSING: {artist_name} ===")
+        try:
+            # Get similar artists from MusicBrainz
+            print(f"Searching MusicBrainz for artist: {artist_name}")
+            artist_data = mb_api.search_artist(artist_name)
+            
+            if artist_data:
+                print(f"Found artist in MusicBrainz: {artist_data.get('name', 'Unknown')}")
+                
+                # Get similar artists
+                similar_artists = mb_api.get_similar_artists(artist_data['id'], limit=10)
+                
+                # Extract names from similar artists data
+                similar_names = [a.get('name', '') for a in similar_artists if a]
+                
+                # Filter out empty names and duplicates while preserving order
+                similar_names = [name for name in similar_names if name and name != artist_name]
+                
+                # Add to recommendations
+                if similar_names:
+                    recommendations[artist_name] = similar_names
+                    print(f"Found {len(similar_names)} similar artists for {artist_name}")
+                else:
+                    print(f"No similar artists found for {artist_name}")
+            else:
+                print(f"Artist not found in MusicBrainz: {artist_name}")
+        
+        except Exception as e:
+            print(f"Error processing artist {artist_name}: {e}")
+            
+        # Add a small delay to respect API rate limits
+        time.sleep(1.0)
+    
+    print(f"Finished processing {total_artists} artists from directory structure")
+    
+    # Get additional artists from metadata that weren't found in directory structure
+    metadata_only_artists = metadata_artists - directory_artists
+    
+    if metadata_only_artists:
+        print(f"\nProcessing {len(metadata_only_artists)} additional artists found in metadata...")
+        
+        metadata_total = len(metadata_only_artists)
+        for idx, artist_name in enumerate(metadata_only_artists):
+            metadata_processed = idx + 1
+            metadata_percentage = (metadata_processed / metadata_total) * 100
+            
+            # Progress indicator for second cycle - use the SAME format as first cycle
+            print(f"Progress: {metadata_percentage:.1f}% ({metadata_processed}/{metadata_total} artists)")
+            
+            print(f"=== PROCESSING: {artist_name} ===")
+            try:
+                # Get similar artists from MusicBrainz
+                print(f"Searching MusicBrainz for artist: {artist_name}")
+                artist_data = mb_api.search_artist(artist_name)
+                
+                if artist_data:
+                    print(f"Found artist in MusicBrainz: {artist_data.get('name', 'Unknown')}")
+                    
+                    # Get similar artists
+                    similar_artists = mb_api.get_similar_artists(artist_data['id'], limit=10)
+                    
+                    # Extract names from similar artists data
+                    similar_names = [a.get('name', '') for a in similar_artists if a]
+                    
+                    # Filter out empty names and duplicates while preserving order
+                    similar_names = [name for name in similar_names if name and name != artist_name]
+                    
+                    # Add to recommendations
+                    if similar_names:
+                        recommendations[artist_name] = similar_names
+                        print(f"Found {len(similar_names)} similar artists for {artist_name}")
+                    else:
+                        print(f"No similar artists found for {artist_name}")
+                else:
+                    print(f"Artist not found in MusicBrainz: {artist_name}")
+            
+            except Exception as e:
+                print(f"Error processing artist {artist_name}: {e}")
+                
+            # Add a small delay to respect API rate limits
+            time.sleep(1.0)
+    
+    # Return the recommendations dictionary
+    return recommendations
+
+
+def main():
+    """Main entry point for the Music Discovery script."""
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Music Discovery script to find similar artists in FLAC collection")
+    parser.add_argument('--dir', dest='music_dir', help='Path to FLAC music directory')
+    parser.add_argument('--save-in-music-dir', action='store_true', help='Save recommendations.json in music directory')
+    parser.add_argument('--email', dest='mb_email', default=DEFAULT_EMAIL, 
+                      help=f'Email to use for MusicBrainz API requests (default: {DEFAULT_EMAIL})')
+    
     args = parser.parse_args()
     
-    # Use the directory from command-line args, or open browser if not specified
-    music_dir = args.dir
+    # Get music directory from command line or prompt user
+    music_dir = args.music_dir
     if not music_dir:
-        print(f"{Fore.YELLOW}No directory specified, opening directory browser...{Style.RESET_ALL}")
-        music_dir = browse_directory()
+        music_dir = select_directory()
         if not music_dir:
-            print(f"{Fore.RED}No directory selected. Exiting.{Style.RESET_ALL}")
+            print("No directory selected. Exiting.")
             return
     
-    # Validate the directory exists
-    if not os.path.isdir(music_dir):
-        print(f"{Fore.RED}Error: Directory {music_dir} does not exist.{Style.RESET_ALL}")
-        return
-        
-    print(f"{Fore.GREEN}Using music directory: {music_dir}{Style.RESET_ALL}")
+    # Print banner and info
+    print_banner()
+    print(f"Using MusicBrainz email: {args.mb_email}")
+    print(f"Scanning music library in {music_dir}...")
     
-    # Determine output file path based on save-in-music-dir flag
-    if args.save_in_music_dir:
-        output_file = os.path.join(music_dir, 'recommendations.json')
-        print(f"{Fore.CYAN}Will save recommendations to music directory: {output_file}{Style.RESET_ALL}")
-    else:
-        output_file = args.output
-        print(f"{Fore.CYAN}Will save recommendations to: {output_file}{Style.RESET_ALL}")
-    
-    # Create components
-    scanner = ProgressTrackingFlacScanner(music_dir)  # Use the enhanced scanner
-    music_db = MusicBrainzAPI(user_email=args.email)
-    persistence = JsonFilePersistence(output_file=output_file)
-    
-    # Create and run app
-    app = MusicDiscoveryApp(
-        scanner=scanner,
-        music_db=music_db,
-        persistence=persistence
-    )
-    
+    # Process the library and generate recommendations
     try:
-        app.run(args.max_artists)
-        print(f"\nMusic discovery complete! Check {output_file}")
+        start_time = time.time()
+        recommendations = process_music_library(music_dir, mb_email=args.mb_email)
+        process_time = time.time() - start_time
+        print(f"Music discovery completed in {process_time:.2f} seconds")
+        
+        # Save recommendations
+        if args.save_in_music_dir:
+            output_file = os.path.join(music_dir, "recommendations.json")
+        else:
+            output_file = "recommendations.json"
+        
+        print(f"Saving recommendations to {output_file}")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(recommendations, f, indent=2)
+        
+        # Print summary
+        total_source_artists = len(recommendations)
+        total_recommendations = sum(len(similar_artists) for similar_artists in recommendations.values())
+        print(f"\nTotal source artists with recommendations: {total_source_artists}")
+        print(f"Total recommended artists: {total_recommendations}")
+        print(f"Average recommendations per artist: {total_recommendations / total_source_artists:.1f}")
+        print("\nMusic discovery complete!")
+        
     except Exception as e:
-        print(f"Error during execution: {e}")
-        import traceback
+        print(f"Error during music discovery: {e}")
         traceback.print_exc()
+        return 1
+    
+    return 0
         
 
 if __name__ == '__main__':

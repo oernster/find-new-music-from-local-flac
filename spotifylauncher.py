@@ -28,7 +28,7 @@ from PyQt5.QtCore import (
     QPropertyAnimation, QEasingCurve, pyqtProperty, QSize, QPointF, QRectF
 )
 
-DEFAULT_EMAIL = "oliverjernster@hotmail.com"  # Use the same email as in musicdiscovery.py
+DEFAULT_EMAIL = "your email"  # Use the same email as in musicdiscovery.py
 
 # Global dictionary to track last update times for different phases
 STATUS_UPDATE_THROTTLE: Dict[str, float] = {
@@ -641,6 +641,58 @@ class ScriptWorker(QThread):
             bool: True if progress was updated, False otherwise
         """
         try:
+            # Initialize tracking variables if not already done
+            if not hasattr(self, 'original_total_artists'):
+                self.original_total_artists = 0  # Total artists reported initially
+                self.max_artist_count = 0  # Maximum artist count seen
+                self.current_value = 0  # Current progress value
+            
+            # VERY EXPLICIT progress reset for various artists processing
+            if "RESET_PROGRESS_BAR_NOW" in line and "VARIOUS_ARTISTS_PROCESSING" in line:
+                self.safe_emit_output("EXPLICIT PROGRESS RESET DETECTED - Resetting for Various Artists Processing")
+                
+                # Send a strong signal to the UI to reset everything
+                self.update_progress.emit(0, "Starting Various Artists Processing")
+                
+                # Reset all counters for a fresh start
+                self.current_value = 0
+                self.max_artist_count = 0
+                self.processed_artists = 0
+                self.total_artists = 0
+                
+                if hasattr(self, 'current_artist_number'):
+                    self.current_artist_number = 0
+                    
+                return True
+                
+            # Reset counter for compilation album processing
+            if "Progress: 0% (0/" in line and "compilation albums)" in line:
+                # This reinforces the reset and specifically sets the status text to remove any previous artist reference
+                self.update_progress.emit(0, "Processing compilation albums")
+                return True
+                
+            # Compilation album progress pattern: (N/M compilation albums)
+            compilation_progress_match = re.search(r'Progress: (\d+(?:\.\d+)?)% \((\d+)/(\d+) compilation albums\)', line)
+            if compilation_progress_match:
+                percentage = float(compilation_progress_match.group(1))
+                current = int(compilation_progress_match.group(2))
+                total = int(compilation_progress_match.group(3))
+                
+                # Set progress value and explicitly update status text to show compilation album progress
+                int_percentage = int(percentage)
+                self.update_progress.emit(int_percentage, f"Processing compilation album {current} of {total}")
+                self.current_value = int_percentage
+                return True
+
+            # Processing compilation album specific line
+            if "Processing compilation album:" in line:
+                album_match = re.search(r'Processing compilation album: (.+)', line)
+                if album_match:
+                    album_name = album_match.group(1)
+                    # Update status text to show current album name
+                    self.update_progress.emit(-1, f"Processing compilation album: {album_name}")
+                    return True
+
             # First, check for genre-related progress indicators
             
             # Check for genre progress pattern: Processing: X% (Y/Z genres)
@@ -734,6 +786,26 @@ class ScriptWorker(QThread):
                 
                 self.update_progress.emit(self.current_value, status_message)
                 return True
+                
+            # Look for metadata artist progress pattern
+            metadata_progress_match = re.search(r'Progress \(metadata artists\): (\d+\.\d+)% \((\d+)/(\d+)\)', line)
+            if metadata_progress_match:
+                percentage = float(metadata_progress_match.group(1))
+                current = int(metadata_progress_match.group(2))
+                total = int(metadata_progress_match.group(3))
+                
+                # For metadata artists, calculate our own percentage
+                int_percentage = int(percentage)
+                self.update_progress.emit(int_percentage, f"Processing metadata artist {current} of {total}")
+                self.current_value = int_percentage
+                return True
+                
+            # Processing additional artists from metadata
+            additional_match = re.search(r'Processing (\d+) additional artists found in metadata', line)
+            if additional_match:
+                count = additional_match.group(1)
+                self.update_progress.emit(self.current_value, f"Processing {count} additional artists from metadata")
+                return True
             
             # If no genre-specific patterns match, fall back to the original logic
             
@@ -742,8 +814,24 @@ class ScriptWorker(QThread):
             if total_artists_match:
                 total = int(total_artists_match.group(1))
                 self.total_artists = total
+                self.original_total_artists = total
                 self.safe_emit_output(f"Initialized total artists to {total}")
                 self.update_progress.emit(0, f"Beginning to process {total} artists")
+                return True
+            
+            # Store original artist count when found in FLAC files
+            flac_artists_match = re.search(r'Found (\d+) unique artists in (\d+) valid FLAC files', line)
+            if flac_artists_match:
+                artists_count = int(flac_artists_match.group(1))
+                files_count = flac_artists_match.group(2)
+                
+                # Only set this once when we first find it
+                if self.original_total_artists == 0:
+                    self.original_total_artists = artists_count
+                    self.max_artist_count = artists_count
+                    self.safe_emit_output(f"Initial artist count: {artists_count}")
+                
+                self.update_progress.emit(5, f"Found {artists_count} artists in {files_count} files")
                 return True
             
             # Specifically look for progress lines with detailed format
@@ -753,10 +841,27 @@ class ScriptWorker(QThread):
                 current = int(progress_match.group(2))
                 total = int(progress_match.group(3))
                 
-                # Convert percentage to integer and emit progress update
-                int_percentage = int(percentage)
-                self.update_progress.emit(int_percentage, f"Processing: {current}/{total} artists")
-                self.current_value = int_percentage
+                # If the total is inconsistent with max_artist_count, adjust our tracking
+                if current > self.max_artist_count:
+                    self.max_artist_count = current
+                
+                # Calculate a corrected percentage using max artist count if needed
+                corrected_percentage = percentage
+                if current > total:
+                    # We have more artists than initially reported
+                    corrected_percentage = min(100, (current / max(current, self.max_artist_count)) * 100)
+                    # Use custom status text to show accurate counts
+                    status_text = f"Processing artist {current} of {self.max_artist_count}"
+                    # Round percentage to integer and emit progress update
+                    int_percentage = int(corrected_percentage)
+                    self.update_progress.emit(int_percentage, status_text)
+                else:
+                    # Regular case
+                    int_percentage = int(percentage)
+                    self.update_progress.emit(int_percentage, f"Processing: {current}/{total} artists")
+                
+                # Store current value for future comparisons
+                self.current_value = int(corrected_percentage)
                 return True
             
             # Detect scanning library
@@ -766,6 +871,13 @@ class ScriptWorker(QThread):
                     music_dir = dir_match.group(1)
                     self.update_progress.emit(2, f"Scanning library in {music_dir}")
                     return True
+            
+            # Track number of FLAC files
+            flac_files_match = re.search(r'Found (\d+) FLAC files to analyze', line)
+            if flac_files_match:
+                flac_count = flac_files_match.group(1)
+                self.update_progress.emit(3, f"Found {flac_count} FLAC files")
+                return True
             
             # Detect artist directory counting
             if "Found" in line and "artist directories with" in line:
@@ -780,10 +892,50 @@ class ScriptWorker(QThread):
             artist_processing = re.search(r'=== PROCESSING: (.+?) ===', line)
             if artist_processing:
                 artist_name = artist_processing.group(1)
+                
+                # Track current artist number (auto-incremented)
+                if hasattr(self, 'current_artist_number'):
+                    self.current_artist_number += 1
+                else:
+                    self.current_artist_number = 1
+                
+                # Adjust max artist count if needed
+                if self.current_artist_number > self.max_artist_count:
+                    self.max_artist_count = self.current_artist_number
+                
+                # Calculate percentage based on adjusted max count
+                if self.max_artist_count > 0:
+                    adjusted_percentage = min(100, int((self.current_artist_number / self.max_artist_count) * 100))
+                    # Never go backward
+                    if adjusted_percentage < self.current_value:
+                        adjusted_percentage = self.current_value
+                    # Update current value
+                    self.current_value = adjusted_percentage
+                else:
+                    adjusted_percentage = 0
+                
                 # Truncate long artist names for display
                 if len(artist_name) > 30:
                     artist_name = artist_name[:27] + "..."
-                self.update_progress.emit(-3, f"Processing artist: {artist_name}")
+                
+                # Update with both the status text AND adjusted percentage
+                status_text = f"Processing artist: {artist_name} ({self.current_artist_number}/{self.max_artist_count})"
+                self.update_progress.emit(adjusted_percentage, status_text)
+                return True
+            
+            # Additional processing: track if we're processing additional artists
+            additional_match = re.search(r'Processing (\d+) additional artists', line)
+            if additional_match:
+                additional_count = int(additional_match.group(1))
+                total_processed = self.max_artist_count
+                total_to_process = total_processed + additional_count
+                
+                # Update our max count for percentage calculation
+                self.max_artist_count = total_to_process
+                
+                # Update status but keep percentage as is
+                status_text = f"Processing additional artists (total: {total_to_process})"
+                self.update_progress.emit(self.current_value, status_text)
                 return True
             
             # Detect Spotify progress format
@@ -835,20 +987,42 @@ class ScriptWorker(QThread):
                 self.update_progress.emit(-1, "Artist Genre Classification Complete")
                 return True
             
-            # Detect library artists summary
-            library_match = re.search(r"Found (\d+) unique artists in (\d+) valid FLAC files", line)
-            if library_match:
-                artists_count = library_match.group(1)
-                files_count = library_match.group(2)
-                self.update_progress.emit(95, f"Found {artists_count} artists in {files_count} files")
-                return True
-            
             # Detect successful recommendations
             if "Total source artists with recommendations:" in line:
                 rec_match = re.search(r"Total source artists with recommendations: (\d+)", line)
                 if rec_match:
                     count = rec_match.group(1)
                     self.update_progress.emit(97, f"Generated recommendations for {count} artists")
+                    return True
+            
+            # Finished processing message
+            finished_processing_match = re.search(r'Finished processing (\d+) artists', line)
+            if finished_processing_match:
+                count = finished_processing_match.group(1)
+                self.update_progress.emit(90, f"Finished processing {count} artists")
+                return True
+            
+            # Found compilation albums
+            compilation_match = re.search(r'Found (\d+) compilation albums', line)
+            if compilation_match:
+                count = compilation_match.group(1)
+                self.update_progress.emit(-1, f"Found {count} compilation albums")
+                return True
+            
+            # No artists found in compilation
+            if "No artists found for album" in line and "Using MusicBrainz lookup" in line:
+                album_match = re.search(r"No artists found for album '(.+?)'\.", line)
+                if album_match:
+                    album_name = album_match.group(1)
+                    self.update_progress.emit(-1, f"Looking up artists for album: {album_name}")
+                    return True
+            
+            # Artist from compilation
+            if "Added" in line and "recommendations for" in line and "from compilation" in line:
+                artist_match = re.search(r"Added .+ recommendations for '(.+?)' from compilation", line)
+                if artist_match:
+                    artist_name = artist_match.group(1)
+                    self.update_progress.emit(-1, f"Added recommendations for: {artist_name}")
                     return True
             
             # Detect saving recommendations
@@ -863,13 +1037,13 @@ class ScriptWorker(QThread):
             
             # Return false if no progress was detected
             return False
-            
+                
         except Exception as e:
             # Log errors in progress tracking
             error_msg = f"Error in progress tracking: {str(e)}\n{traceback.format_exc()}"
             self.safe_emit_output(error_msg)
             return False
-
+        
     def stop(self):
         """Stop the running process safely."""
         self.running = False
@@ -1654,7 +1828,7 @@ class SpotifyLauncher(QMainWindow):
         self.run_spotify_client()
 
     def run_spotify_client(self):
-        """Run the actual Spotify Client process."""    
+        """Run the actual Spotify Client process with custom API settings."""    
         # Skip configuration check since we're called after that
         if self.spotify_worker and self.spotify_worker.isRunning():
             # Script is already running
@@ -1704,6 +1878,11 @@ class SpotifyLauncher(QMainWindow):
             # Construct path to recommendations.json file
             recommendations_file = os.path.join(music_dir, "recommendations.json")
             
+            # Get API settings
+            spotify_client_id = self.get_config_value("spotify_client_id", "your client id")
+            spotify_client_secret = self.get_config_value("spotify_client_secret", "your client secret")
+            musicbrainz_email = self.get_config_value("musicbrainz_email", DEFAULT_EMAIL)
+            
             # Check if recommendations file exists
             if not os.path.exists(recommendations_file):
                 self.log_spotify_output(f"Error: Recommendations file not found: {recommendations_file}")
@@ -1721,9 +1900,24 @@ class SpotifyLauncher(QMainWindow):
             self.spotify_worker.output_text.connect(self.log_status)
             self.spotify_worker.console_output.connect(self.log_spotify_output)
             
+            # Add arguments for API credentials if they're not the defaults
+            extra_args = []
+            # Only add API arguments if they're different from defaults
+            extra_args.extend(["--client-id", spotify_client_id])
+            extra_args.extend(["--client-secret", spotify_client_secret])
+            extra_args.extend(["--mb-email", musicbrainz_email])
+                
+            # Set the extra args if we have any
+            if extra_args:
+                self.spotify_worker.extra_args = extra_args
+            
             # Add the recommendations file as environment variable
             os.environ["RECOMMENDATIONS_FILE"] = recommendations_file
             self.log_status(f"Set RECOMMENDATIONS_FILE environment variable: {recommendations_file}")
+            
+            # Log API details
+            self.log_status(f"Using Spotify Client ID: {spotify_client_id[:5]}...")
+            self.log_status(f"Using MusicBrainz email: {musicbrainz_email}")
             
             # Start the thread
             self.spotify_worker.start()
@@ -1731,6 +1925,8 @@ class SpotifyLauncher(QMainWindow):
             # Log the start of the process
             self.log_status("Spotify Client started")
             self.log_spotify_output(f"Spotify Client process started using recommendations file: {recommendations_file}...")
+            self.log_spotify_output(f"Using MusicBrainz email: {musicbrainz_email}")
+            self.log_spotify_output("Using custom Spotify API credentials")
         
         except Exception as e:
             error_msg = f"Error launching Spotify Client: {str(e)}\n{traceback.format_exc()}"
@@ -1742,7 +1938,7 @@ class SpotifyLauncher(QMainWindow):
             self.discovery_button.setEnabled(True)
 
     def run_music_discovery(self):
-        """Run the actual Music Discovery process."""
+        """Run the actual Music Discovery process with custom API settings."""
         # Skip configuration check since we're called after that
         if self.discovery_worker and self.discovery_worker.isRunning():
             self.log_status("Music Discovery is already running")
@@ -1764,6 +1960,9 @@ class SpotifyLauncher(QMainWindow):
 
         # Get configured music directory from config file
         music_dir = self.get_configured_music_dir()
+        
+        # Get MusicBrainz email from config
+        musicbrainz_email = self.get_config_value("musicbrainz_email", DEFAULT_EMAIL)
         
         # Check if the music directory exists
         if not os.path.isdir(music_dir):
@@ -1846,12 +2045,13 @@ class SpotifyLauncher(QMainWindow):
             self.discovery_worker.output_text.connect(self.log_status, Qt.QueuedConnection)
             self.discovery_worker.console_output.connect(self.log_discovery_output, Qt.QueuedConnection)
 
-            # Add arguments for music directory and to save recommendations in music directory
-            self.discovery_worker.extra_args = ["--dir", music_dir, "--save-in-music-dir"]
+            # Add arguments for music directory, MusicBrainz email, and to save recommendations in music directory
+            self.discovery_worker.extra_args = ["--dir", music_dir, "--save-in-music-dir", "--email", musicbrainz_email]
 
             # Log before starting the thread
             self.log_status("Music Discovery thread created, starting...")
             self.log_discovery_output(f"Starting Music Discovery process for directory: {music_dir}...")
+            self.log_discovery_output(f"Using MusicBrainz email: {musicbrainz_email}")
 
             # Start the thread
             self.discovery_worker.start()
@@ -1871,9 +2071,9 @@ class SpotifyLauncher(QMainWindow):
             self.discovery_button.setEnabled(True)
             self.spotify_button.setEnabled(True)
             self.discovery_status.setText("Error starting process")
-
+    
     def show_options_dialog(self):
-        """Show the Options dialog with music directory and view settings."""
+        """Show the Options dialog with music directory and API settings."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Options")
         dialog.setMinimumWidth(500)
@@ -1885,24 +2085,65 @@ class SpotifyLauncher(QMainWindow):
         layout.setSpacing(15)
         
         # Music Directory section
-        music_dir_layout = QHBoxLayout()
+        music_dir_group = QGroupBox("Music Library")
+        music_dir_layout = QVBoxLayout()
+        music_dir_group.setLayout(music_dir_layout)
+        
+        # Input layout
+        music_dir_input_layout = QHBoxLayout()
         
         # Create label
         music_dir_label = QLabel("Music Directory:")
-        music_dir_layout.addWidget(music_dir_label)
+        music_dir_input_layout.addWidget(music_dir_label)
         
         # Create text field with current value
         music_dir_input = QLineEdit()
         current_dir = self.get_configured_music_dir()
         music_dir_input.setText(current_dir)  # Use current value
-        music_dir_layout.addWidget(music_dir_input)
+        music_dir_input_layout.addWidget(music_dir_input)
         
         # Create browse button
         browse_button = QPushButton("Browse...")
         browse_button.clicked.connect(lambda: self.browse_music_dir(music_dir_input))
-        music_dir_layout.addWidget(browse_button)
+        music_dir_input_layout.addWidget(browse_button)
         
-        layout.addLayout(music_dir_layout)
+        music_dir_layout.addLayout(music_dir_input_layout)
+        layout.addWidget(music_dir_group)
+        
+        # API Settings section
+        api_group = QGroupBox("API Credentials")
+        api_layout = QVBoxLayout()
+        api_group.setLayout(api_layout)
+        
+        # Spotify Client ID
+        spotify_id_layout = QHBoxLayout()
+        spotify_id_label = QLabel("Spotify Client ID:")
+        spotify_id_input = QLineEdit()
+        spotify_id_input.setText(self.get_config_value("spotify_client_id", "your client id"))
+        spotify_id_layout.addWidget(spotify_id_label)
+        spotify_id_layout.addWidget(spotify_id_input)
+        api_layout.addLayout(spotify_id_layout)
+        
+        # Spotify Client Secret
+        spotify_secret_layout = QHBoxLayout()
+        spotify_secret_label = QLabel("Spotify Client Secret:")
+        spotify_secret_input = QLineEdit()
+        spotify_secret_input.setText(self.get_config_value("spotify_client_secret", ""))
+        spotify_secret_input.setEchoMode(QLineEdit.Password)  # Hide the secret by default
+        spotify_secret_layout.addWidget(spotify_secret_label)
+        spotify_secret_layout.addWidget(spotify_secret_input)
+        api_layout.addLayout(spotify_secret_layout)
+        
+        # MusicBrainz Email
+        mb_email_layout = QHBoxLayout()
+        mb_email_label = QLabel("MusicBrainz Email:")
+        mb_email_input = QLineEdit()
+        mb_email_input.setText(self.get_config_value("musicbrainz_email", DEFAULT_EMAIL))
+        mb_email_layout.addWidget(mb_email_label)
+        mb_email_layout.addWidget(mb_email_input)
+        api_layout.addLayout(mb_email_layout)
+        
+        layout.addWidget(api_group)
         
         # View Options section
         view_options_group = QGroupBox("View Options")
@@ -1942,9 +2183,15 @@ class SpotifyLauncher(QMainWindow):
         
         # Button connections
         cancel_button.clicked.connect(dialog.reject)
-        save_button.clicked.connect(lambda: self.save_options(dialog, music_dir_input.text(), 
-                                                             debug_toggle.isChecked(), 
-                                                             console_toggle.isChecked()))
+        save_button.clicked.connect(lambda: self.save_options(
+            dialog, 
+            music_dir_input.text(),
+            spotify_id_input.text(),
+            spotify_secret_input.text(),
+            mb_email_input.text(),
+            debug_toggle.isChecked(), 
+            console_toggle.isChecked()
+        ))
         
         # Apply dark theme styling
         dark_bg = "#121212"           # Dark background
@@ -2032,13 +2279,23 @@ class SpotifyLauncher(QMainWindow):
         # Show the dialog
         dialog.exec_()
     
-    def save_options(self, dialog, music_dir, debug_tab_enabled, console_output_enabled):
+    def is_valid_email(self, email):
+        """Simple validation for email format."""
+        # Basic email validation pattern
+        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        return re.match(pattern, email) is not None
+    
+    def save_options(self, dialog, music_dir, spotify_client_id, spotify_client_secret, 
+                 musicbrainz_email, debug_tab_enabled, console_output_enabled):
         """
-        Save options from the Options dialog.
+        Save options from the Options dialog with validation for placeholder values.
         
         Args:
             dialog (QDialog): The dialog to close
             music_dir (str): Selected music directory
+            spotify_client_id (str): Spotify API client ID
+            spotify_client_secret (str): Spotify API client secret
+            musicbrainz_email (str): MusicBrainz email
             debug_tab_enabled (bool): Whether debug tab is enabled
             console_output_enabled (bool): Whether console output is enabled
         """
@@ -2052,13 +2309,52 @@ class SpotifyLauncher(QMainWindow):
             error_dialog.exec_()
             return
 
+        # Check for placeholder values in API credentials
+        placeholder_errors = []
+        
+        # Check MusicBrainz email (case insensitive)
+        if musicbrainz_email.lower() in ["your email", "youremail@example.com", "email@example.com"]:
+            placeholder_errors.append("MusicBrainz Email must be defined with your actual email address")
+        
+        # Check Spotify Client ID (case insensitive)
+        if spotify_client_id.lower() in ["your client key", "your client id", "client id", "clientid"]:
+            placeholder_errors.append("Spotify Client ID must be defined with your actual API key")
+        
+        # Check Spotify Client Secret (case insensitive)
+        if spotify_client_secret.lower() in ["your client key", "your client secret", "client secret", "clientsecret"]:
+            placeholder_errors.append("Spotify Client Secret must be defined with your actual API secret")
+        
+        # Display error for placeholder values if any were found
+        if placeholder_errors:
+            error_dialog = QMessageBox(self)
+            error_dialog.setWindowTitle("Invalid API Credentials")
+            error_dialog.setText("The following items MUST be defined:")
+            error_dialog.setDetailedText("\n".join(placeholder_errors))
+            error_dialog.setIcon(QMessageBox.Warning)
+            self.apply_dark_style_to_message_box(error_dialog)
+            error_dialog.exec_()
+            return
+
+        # Validate email format
+        if not self.is_valid_email(musicbrainz_email):
+            error_dialog = QMessageBox(self)
+            error_dialog.setWindowTitle("Invalid Email")
+            error_dialog.setText("Please enter a valid email address for MusicBrainz.")
+            error_dialog.setIcon(QMessageBox.Warning)
+            self.apply_dark_style_to_message_box(error_dialog)
+            error_dialog.exec_()
+            return
+
         # Normalize to use backslashes (Windows-style)
         normalized_music_dir = music_dir.replace('/', '\\')
 
-        # Save the directory path to a config file
+        # Save the directory path and API settings to a config file
         config_path = os.path.join(self.get_base_dir(), "config.json")
         config = {
             "music_directory": normalized_music_dir,
+            "spotify_client_id": spotify_client_id,
+            "spotify_client_secret": spotify_client_secret,
+            "musicbrainz_email": musicbrainz_email,
             "debug_tab_enabled": debug_tab_enabled,
             "console_output_enabled": console_output_enabled
         }
@@ -2102,7 +2398,6 @@ class SpotifyLauncher(QMainWindow):
             error_dialog.setIcon(QMessageBox.Critical)
             self.apply_dark_style_to_message_box(error_dialog)
             error_dialog.exec_()
-
 
     def setup_menu(self):
         """Set up the menu bar with options."""
@@ -2604,7 +2899,21 @@ class SpotifyLauncher(QMainWindow):
         except Exception as e:
             # Last resort fallback
             print(f"Error in log_spotify_output: {e} - Message was: {message}")
-          
+       
+    def get_config_value(self, key, default=None):
+        """Get a value from the config file or return default if not found."""
+        config_path = os.path.join(self.get_base_dir(), "config.json")
+        
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    return config.get(key, default)
+        except Exception as e:
+            self.log_status(f"Error reading config for key {key}: {str(e)}")
+        
+        return default
+       
     def get_configured_music_dir(self):
         """Get the configured music directory from config file or use default."""
         config_path = os.path.join(self.get_base_dir(), "config.json")
