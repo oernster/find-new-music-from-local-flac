@@ -3,9 +3,9 @@
 - Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
 - (currently only supported on Windows)
 
-## If you find this GenreGenius app of use and would like to offer me a tip for creating and maintaining it then please feel free to buy me a coffee via paypal:
+## If you find this GenreGenius app of use and would like to offer me a cvontribution for enhancing and maintaining it then please use this link:
 
-### [Friendly coffee donation here](https://www.paypal.com/ncp/payment/6KFFAMLY8H9ZS)
+### [Expected contribution here](https://www.paypal.com/ncp/payment/6KFFAMLY8H9ZS)
 
 The UI/exe once generated will (Step 1) create a json file of keys from your local library directory with a list of values containing inspired artists, avoiding copycat bands etc..  This uses the [MusicBrainz developer API](https://musicbrainz.org/).
 
