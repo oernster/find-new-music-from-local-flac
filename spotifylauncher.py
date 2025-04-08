@@ -2680,7 +2680,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius - Version 1.3.1
+    GenreGenius - Version 1.3.2
     By Oliver Ernster
 
     A tool for discovering music and generating
