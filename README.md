@@ -3,7 +3,7 @@
 - Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
 - (currently only supported on Windows)
 
-The UI/exe once generated will (Step 1) create a json file of keys from your local library directory with a list of values containing inspired artists, avoiding copycat bands etc. and ensuring that no inspired artists are the same as your source artists from your local music library.  This uses the [MusicBrainz developer API](https://musicbrainz.org/).
+The UI/exe once generated will (Step 1) create a json file of keys from your local library directory with a list of values containing inspired artists, avoiding copycat bands etc..  This uses the [MusicBrainz developer API](https://musicbrainz.org/).
 
 NOTE: If you have a large library like me (I have around 450 CDs ripped to FLAC (Free Lossless Audio Codec; basically as good as CD), though mp3 or wav should work fine too since it uses directory names as the artists in subdirectories of the main music directory chosen) then the script will take a while to run.
 
