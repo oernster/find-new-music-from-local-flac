@@ -207,7 +207,7 @@ class MusicRecommendationService:
         return False
 
     def get_recommendations(self, source_artists: List[Tuple[str, int]], 
-                      limit: int = 10) -> Dict[str, List[str]]:
+                  limit: int = 10) -> Dict[str, List[str]]:
         """
         Generate music recommendations based on artist genres.
         
@@ -399,7 +399,27 @@ class MusicRecommendationService:
             if len(recommendations) > 3:
                 print(f"{Fore.YELLOW}... and {len(recommendations) - 3} more source artists{Style.RESET_ALL}")
         
-        return recommendations
+        # Final filter: Ensure no library artists are in the recommendations
+        filtered_recommendations = {}
+        for source_artist, recommended_artists in recommendations.items():
+            # Filter out any library artists from recommendations
+            filtered_artists = [
+                artist for artist in recommended_artists 
+                if not self.is_library_artist(artist)
+            ]
+            
+            # Only add if we have recommendations after filtering
+            if filtered_artists:
+                filtered_recommendations[source_artist] = filtered_artists
+        
+        # Print the final filter results
+        removed_artists = len(recommendations) - len(filtered_recommendations)
+        if removed_artists > 0:
+            print(f"{Fore.YELLOW}Removed {removed_artists} source artists that had no valid recommendations after filtering.{Style.RESET_ALL}")
+        
+        print(f"{Fore.GREEN}Final number of source artists with recommendations: {len(filtered_recommendations)}{Style.RESET_ALL}")
+        
+        return filtered_recommendations
     
 class MusicDiscoveryApp:
     """Main application for music discovery."""
@@ -463,8 +483,8 @@ class MusicDiscoveryApp:
         # Phase 2.5: Process compilation albums for additional recommendations
         print(f"{Fore.CYAN}Phase 2.5: Processing compilation albums for additional recommendations{Style.RESET_ALL}")
         
-        # Use the new method to process compilations
-        updated_recommendations = self.process_compilations(recommendations)
+        # Use the new method to process compilations, passing library artist names
+        updated_recommendations = self.process_compilations(recommendations, library_artist_names)
         
         # Update our recommendations with the new ones
         recommendations = updated_recommendations
@@ -477,13 +497,14 @@ class MusicDiscoveryApp:
         print(f"\n{Fore.GREEN}=== RECOMMENDATION SUMMARY ==={Style.RESET_ALL}")
         print(f"{Fore.CYAN}Total recommendations: {len(recommendations)} artists{Style.RESET_ALL}")
         
-    def process_compilations(self, existing_recommendations: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    def process_compilations(self, existing_recommendations: Dict[str, List[str]], library_artist_names: Set[str]) -> Dict[str, List[str]]:
         """
         Process compilation albums to find all artists and generate recommendations.
         This supplements the main recommendations from the library scanner.
         
         Args:
             existing_recommendations (Dict[str, List[str]]): Existing recommendations
+            library_artist_names (Set[str]): Set of artists already in the library
             
         Returns:
             Dict[str, List[str]]: Updated recommendations including compilation artists
@@ -522,6 +543,9 @@ class MusicDiscoveryApp:
         # Copy the existing recommendations
         updated_recommendations = existing_recommendations.copy()
         
+        # Create a set of normalized library artist names for quick lookup
+        library_artists_normalized = {normalize_artist_name(artist) for artist in library_artist_names}
+        
         # Process each compilation album
         albums_processed = 0
         artists_processed = 0
@@ -546,6 +570,12 @@ class MusicDiscoveryApp:
                         print(f"{Fore.YELLOW}Artist '{artist}' already in recommendations. Skipping.{Style.RESET_ALL}")
                         continue
                     
+                    # Skip if in library
+                    normalized_artist = normalize_artist_name(artist)
+                    if normalized_artist in library_artists_normalized:
+                        print(f"{Fore.YELLOW}Artist '{artist}' found in library. Skipping.{Style.RESET_ALL}")
+                        continue
+                    
                     try:
                         # Search for the artist on MusicBrainz
                         artist_info = self.music_db.search_artist(artist)
@@ -566,8 +596,11 @@ class MusicDiscoveryApp:
                         # Extract names only
                         similar_artist_names = [a.get('name', '') for a in similar_artists if a]
                         
-                        # Filter out empty names
-                        similar_artist_names = [name for name in similar_artist_names if name]
+                        # Filter out empty names and library artists
+                        similar_artist_names = [
+                            name for name in similar_artist_names 
+                            if name and normalize_artist_name(name) not in library_artists_normalized
+                        ]
                         
                         # Add the recommendations
                         if similar_artist_names:
