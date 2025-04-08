@@ -921,10 +921,13 @@ class SpotifyLauncher(QMainWindow):
         upper_layout = QVBoxLayout(upper_widget)
         upper_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Title label with musical notes
-        title = QLabel("♫  GenreGenius ♫")
+        # Title label with musical notes - using Spotify green color
+        title = QLabel("♫  GenreGenius  ♫")
         title.setAlignment(Qt.AlignCenter)
         title.setFont(QFont("Arial", 16, QFont.Bold))
+        # Set Spotify green color directly
+        spotify_green = "#1DB954"  # Official Spotify green color
+        title.setStyleSheet(f"color: {spotify_green}; font-weight: bold; font-size: 18px;")
         upper_layout.addWidget(title)
         
         # Add spacer
@@ -1282,20 +1285,7 @@ class SpotifyLauncher(QMainWindow):
         self.spotify_status1.setStyleSheet(label_style)
         self.spotify_status2.setStyleSheet(label_style)
         
-        # Make the title label bright and prominent
-        title_style = f"""
-            QLabel {{
-                color: {spotify_green};
-                font-weight: bold;
-                font-size: 18px;
-            }}
-        """
-        
-        # Find the title label in your UI
-        for child in self.findChildren(QLabel):
-            if "♫  GenreGenius ♫" in child.text():
-                child.setStyleSheet(title_style)
-                break
+        # NOTE: We're no longer modifying the title label here since it already has Spotify green styling
         
         # Update menu bar to dark theme
         menubar_style = f"""
@@ -1386,7 +1376,6 @@ class SpotifyLauncher(QMainWindow):
                 margin: 0.5px;
             }}
         """)
-
     
     def print_banner(self):
         """Print a colorful banner in the log."""
@@ -2396,7 +2385,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius - Version 1.1.1
+    GenreGenius - Version 1.2.0
     By Oliver Ernster
 
     A tool for discovering music and generating

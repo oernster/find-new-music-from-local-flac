@@ -211,6 +211,188 @@ class MusicBrainzAPI(MusicDatabase):
         print(f"{Fore.RED}FINAL FAILURE: Unexpected termination for {readable_context}{Style.RESET_ALL}")
         return None
 
+    def get_compilation_recommendations(self, album_names: List[str]) -> Dict[str, List[str]]:
+        """
+        Generate recommendations from a list of compilation album names.
+        
+        Args:
+            album_names (List[str]): List of album names to process
+            
+        Returns:
+            Dict[str, List[str]]: Dictionary mapping artists to recommendations
+        """
+        recommendations = {}
+        
+        for album_name in album_names:
+            print(f"{Fore.CYAN}Processing compilation album: {album_name}{Style.RESET_ALL}")
+            
+            # Get artist information for the album
+            artist_info = self.process_various_artists_album(album_name)
+            
+            # Store recommendations
+            for artist in artist_info:
+                artist_name = artist['name']
+                similar_artists = artist['similar_artists']
+                
+                if similar_artists:
+                    recommendations[artist_name] = similar_artists
+                    print(f"{Fore.GREEN}Added {len(similar_artists)} recommendations for '{artist_name}'{Style.RESET_ALL}")
+        
+        return recommendations
+
+    def process_various_artists_album(self, album_name: str) -> List[Dict]:
+        """
+        Process a Various Artists album to get artists and their recommendations.
+        Finds all artists on the album and generates recommendations for each.
+        
+        Args:
+            album_name (str): Name of the album to look up
+            
+        Returns:
+            List[Dict]: List of artist information dictionaries with recommendations
+        """
+        # Get all artists on the album
+        album_artists = self.get_album_artists(album_name)
+        
+        if not album_artists:
+            print(f"{Fore.YELLOW}No artists found for album '{album_name}'{Style.RESET_ALL}")
+            return []
+        
+        print(f"{Fore.GREEN}Processing {len(album_artists)} artists from album '{album_name}'{Style.RESET_ALL}")
+        
+        # Store artist information with recommendations
+        artist_info = []
+        
+        # Process each artist
+        for artist_name in album_artists:
+            try:
+                # Search for artist
+                print(f"{Fore.CYAN}Looking up artist '{artist_name}' from compilation{Style.RESET_ALL}")
+                artist_data = self.search_artist(artist_name)
+                
+                if not artist_data:
+                    print(f"{Fore.YELLOW}Could not find artist '{artist_name}' on MusicBrainz{Style.RESET_ALL}")
+                    continue
+                
+                # Respect API rate limits
+                time.sleep(2)
+                
+                # Get similar artists
+                similar_artists = self.get_similar_artists(artist_data['id'], limit=10)
+                
+                # Store the information
+                artist_info.append({
+                    'name': artist_name,
+                    'id': artist_data['id'],
+                    'similar_artists': [a.get('name', '') for a in similar_artists if a]
+                })
+                
+                print(f"{Fore.GREEN}Found {len(similar_artists)} similar artists for '{artist_name}'{Style.RESET_ALL}")
+                
+            except Exception as e:
+                print(f"{Fore.RED}Error processing artist '{artist_name}': {e}{Style.RESET_ALL}")
+                
+            # Respect API rate limits
+            time.sleep(2)
+        
+        return artist_info
+
+    def get_album_artists(self, album_name: str, artist_name: str = None) -> List[str]:
+        """
+        Look up artists on an album by album name using MusicBrainz.
+        Particularly useful for Various Artists compilations.
+        
+        Args:
+            album_name (str): Name of the album to search for
+            artist_name (str, optional): Artist name to refine search
+            
+        Returns:
+            List[str]: List of artist names found on the album
+        """
+        print(f"{Fore.CYAN}Looking up album '{album_name}' in MusicBrainz{Style.RESET_ALL}")
+        
+        # Sanitize inputs
+        album_name = album_name.strip()
+        if artist_name:
+            artist_name = artist_name.strip()
+        
+        # Build search query
+        if artist_name and artist_name.lower() not in ('various artists', 'various', 'va', 'v.a.'):
+            # If an artist was provided and it's not Various Artists
+            query = f'release:"{album_name}" AND artist:"{artist_name}"'
+        else:
+            # For Various Artists or unknown artist
+            query = f'release:"{album_name}"'
+        
+        params = {
+            'query': query,
+            'limit': 5,  # Look at top 5 matches
+            'fmt': 'json'
+        }
+        
+        # Search for the album
+        result = self._make_api_request(
+            f"{self.base_url}release",
+            params,
+            f"Searching for album '{album_name}'"
+        )
+        
+        if not result or 'releases' not in result or not result['releases']:
+            print(f"{Fore.YELLOW}No album found for '{album_name}'{Style.RESET_ALL}")
+            return []
+        
+        # Get the first matching release ID
+        release_id = result['releases'][0]['id']
+        
+        # Fetch detailed release information including all artists
+        detailed_params = {
+            'inc': 'recordings+artist-credits',  # Include recordings and artist credits
+            'fmt': 'json'
+        }
+        
+        detailed_result = self._make_api_request(
+            f"{self.base_url}release/{release_id}",
+            detailed_params,
+            f"Getting detailed info for album '{album_name}'"
+        )
+        
+        if not detailed_result or 'media' not in detailed_result:
+            print(f"{Fore.YELLOW}No detailed info found for album '{album_name}'{Style.RESET_ALL}")
+            return []
+        
+        # Extract unique artists from all tracks
+        artists = set()
+        
+        # Process each medium (CD, vinyl side, etc.)
+        for medium in detailed_result['media']:
+            if 'tracks' not in medium:
+                continue
+                
+            # Process each track in the medium
+            for track in medium['tracks']:
+                if 'artist-credit' not in track:
+                    continue
+                    
+                # Extract artist names from credits
+                for credit in track['artist-credit']:
+                    if isinstance(credit, dict) and 'artist' in credit and 'name' in credit['artist']:
+                        artist_name = credit['artist']['name']
+                        # Filter out Various Artists
+                        if artist_name.lower() not in ('various artists', 'various', 'va', 'v.a.'):
+                            artists.add(artist_name)
+        
+        # Convert set to list
+        artist_list = list(artists)
+        
+        if artist_list:
+            print(f"{Fore.GREEN}Found {len(artist_list)} artists on album '{album_name}': {', '.join(artist_list[:5])}{Style.RESET_ALL}")
+            if len(artist_list) > 5:
+                print(f"{Fore.GREEN}...and {len(artist_list) - 5} more{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}No artists found for album '{album_name}'{Style.RESET_ALL}")
+            
+        return artist_list
+
     def search_artist_by_id(self, artist_id: str) -> Optional[Dict]:
         """
         Search for an artist directly by ID.
