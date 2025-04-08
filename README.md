@@ -3,7 +3,7 @@
 - Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
 - (currently only supported on Windows)
 
-## If you find this GenreGenius app of use and would like to offer me a cvontribution for enhancing and maintaining it then please use this link:
+## If you find this GenreGenius app of use and would like to offer me a contribution for enhancing and maintaining it then please use this link:
 
 ### [Expected contribution here](https://www.paypal.com/ncp/payment/6KFFAMLY8H9ZS)
 
