@@ -1,7 +1,7 @@
 # GenreGenius version 1.4.1
 
 - Discover new music with generated new artists top tracks playlists from your local music organised by genre!!!
-- (currently only supported on Windows)
+- (currently only supported on Windows; with enough monetary contributions, I may provide a port to at least Debian Linux; can't afford a mac right now so... meh!)
 
 ## If you find this GenreGenius app of use and would like to offer me a contribution for enhancing and maintaining it then please use this link:
 
