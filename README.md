@@ -46,4 +46,6 @@ The Deezer App doesn't support API usage currently for developers so this has to
 - Hit the Step 1 button; fill in credentials.
 - Hit the step 2 button.
 
-Note: Step 1 takes the longest time; step 2 (2 phases) also takes a some time depending on the number of artists generated but not so long.
+# Note 
+- Step 1 takes the longest time (Primary artist lookups followed by Various Artists lookups if appropriate).  
+- Step 2 also takes a some time depending on the number of artists generated but not so long (Artist genre lookup, followed by classification into genres and playlist(s) generation).
