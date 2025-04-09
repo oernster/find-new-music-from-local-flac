@@ -14,7 +14,8 @@ from tkinter import filedialog
 from pathlib import Path
 from colorama import Fore, Style, init
 from typing import Dict, List, Optional, Set, Tuple
-from collections import defaultdict
+from collections import defaultdict, Counter
+import subprocess
 
 from libraryscanner import MusicLibraryScanner, ProgressTrackingFlacScanner
 from musicbrainz import MusicBrainzAPI, normalize_artist_name
@@ -35,67 +36,71 @@ DEFAULT_RECOMMENDATION_LIMIT = 50
 DEFAULT_EMAIL = "your email"  # Default email for MusicBrainz API
 
 
+# Simple exclusion list
+exclusions = [
+    'unknown', '[unknown]', 'various artists', 'various', 'va', 'v.a.',
+    'soundtrack', 'original soundtrack', 'ost'
+]
+
 class JsonFilePersistence:
     """Save recommendations to a JSON file."""
     
     def __init__(self, output_file: Optional[str] = None):
         """
         Initialize the JSON file persistence.
+        Reads music directory from config.json.
         
         Args:
             output_file (Optional[str]): Path to save recommendations to (None to skip saving)
         """
-        self.output_file = output_file
+        try:
+            # Read config to get music directory
+            with open('config.json', 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # Use music directory from config
+            music_dir = config.get('music_dir', '')
+            
+            # Construct full path to recommendations.json
+            if music_dir:
+                self.output_file = os.path.join(music_dir, 'recommendations.json')
+            else:
+                self.output_file = output_file
+        except (FileNotFoundError, json.JSONDecodeError):
+            # Fallback to provided output_file if config read fails
+            self.output_file = output_file
     
     def save(self, recommendations: Dict[str, List[str]]) -> None:
-        """
-        Save recommendations to a JSON file.
-        
-        Args:
-            recommendations (Dict[str, List[str]]): Dictionary of recommendations
-        """
         if not self.output_file:
             return
             
         try:
-            # Create the directory if it doesn't exist
-            os.makedirs(os.path.dirname(os.path.abspath(self.output_file)), exist_ok=True)
+            seen = set()
+            for exclusion in exclusions:
+                seen.add(exclusion.lower())
+            deduplicated_recommendations = {}
+            for key, value_list in recommendations.items():
+                unique_items = []
+                seen.add(key.lower())                
+                for item in value_list:
+                    if item.lower() not in seen:
+                        seen.add(item.lower())
+                        unique_items.append(item.lower())
+                deduplicated_recommendations[key] = unique_items
             
-            # Filter out invalid source artists and their recommendations
-            filtered_recommendations = {}
-            for artist, recs in recommendations.items():
-                # Skip if artist name is invalid or empty
-                if not artist or should_exclude_artist(artist):
-                    print(f"{Fore.YELLOW}Excluding invalid source artist: {artist}{Style.RESET_ALL}")
-                    continue
-                
-                # Filter out invalid recommended artists
-                valid_recs = [
-                    rec for rec in recs 
-                    if rec and not should_exclude_artist(rec)
-                ]
-                
-                # Only add if there are valid recommendations
-                if valid_recs:
-                    filtered_recommendations[artist] = valid_recs
-            
-            # Save the filtered recommendations
+            # Save ONLY the deduplicated version
             with open(self.output_file, 'w', encoding='utf-8') as f:
-                json.dump(filtered_recommendations, f, indent=2)
+                json.dump(deduplicated_recommendations, f, indent=2)
             
+            # Print summary
             print(f"\n{Fore.GREEN}Recommendations saved to {self.output_file}{Style.RESET_ALL}")
-            
-            # Print summary of saved recommendations
-            total_source_artists = len(filtered_recommendations)
-            total_recommendations = sum(len(recs) for recs in filtered_recommendations.values())
-            print(f"{Fore.CYAN}Total source artists with recommendations: {total_source_artists}{Style.RESET_ALL}")
-            print(f"{Fore.CYAN}Total recommended artists: {total_recommendations}{Style.RESET_ALL}")
-            
+            print(f"{Fore.CYAN}Total source artists with recommendations: {len(deduplicated_recommendations)}{Style.RESET_ALL}")
+                
         except Exception as e:
             print(f"{Fore.RED}Error saving recommendations: {e}{Style.RESET_ALL}")
-            print(f"{Fore.RED}Traceback: {traceback.format_exc()}{Style.RESET_ALL}")
-            
-
+            print(f"{Fore.RED}Traceback: {traceback.format_exc()}{Style.RESET_ALL}")           
+    
+    
 def create_comprehensive_library_exclusion_set(library_artists: Set[str]) -> Set[str]:
     """
     Create a comprehensive set of library artists with multiple variations.
@@ -132,9 +137,38 @@ def create_comprehensive_library_exclusion_set(library_artists: Set[str]) -> Set
     return comprehensive_set
 
 
+def normalize_artist_name(name: str) -> str:
+    """
+    Normalize an artist name for consistent comparison.
+    
+    Args:
+        name (str): Artist name to normalize
+        
+    Returns:
+        str: Normalized artist name (lowercase, no special chars, no 'the' prefix)
+    """
+    if not name:
+        return ""
+        
+    # Convert to lowercase and strip whitespace
+    name = name.lower().strip()
+    
+    # Remove 'the ' prefix if it exists
+    if name.startswith('the '):
+        name = name[4:]
+    
+    # Replace ampersands and 'and' for consistency
+    name = name.replace(' & ', ' and ')
+    
+    # Remove special characters, keeping only alphanumeric and space
+    name = ''.join(c for c in name if c.isalnum() or c.isspace()).strip()
+    
+    return name
+
+
 def should_exclude_artist(artist_name: str) -> bool:
     """
-    Check if an artist should be excluded from recommendations.
+    Simple check if an artist should be excluded from recommendations.
     
     Args:
         artist_name (str): Name of the artist to check
@@ -142,27 +176,19 @@ def should_exclude_artist(artist_name: str) -> bool:
     Returns:
         bool: True if artist should be excluded, False otherwise
     """
+    # Early return for None or empty string
+    if not artist_name:
+        return True
+        
     # Convert to lowercase for case-insensitive matching
-    name_lower = artist_name.lower()
-    
-    # Exclude specific artist names
-    exclude_names = [
-        'unknown', '[unknown]', 'various artists', 'various', 'va', 'v.a.',
-        'soundtrack', 'original soundtrack', 'ost', 'compilation'
-    ]
+    name_lower = artist_name.lower().strip()
     
     # Check for exact matches with exclusion list
-    if any(name_lower == excluded for excluded in exclude_names):
+    if any(name_lower == exclusion for exclusion in exclusions):
         return True
     
     # Check for square brackets which often indicate metadata issues
     if '[' in name_lower and ']' in name_lower:
-        return True
-    
-    # Check for unicode characters that might indicate encoding issues
-    # This checks if more than 50% of characters are non-ASCII
-    non_ascii_count = sum(1 for c in artist_name if ord(c) > 127)
-    if len(artist_name) > 0 and non_ascii_count / len(artist_name) > 0.5:
         return True
         
     return False
@@ -226,6 +252,125 @@ class MusicRecommendationService:
             return True
         
         return False
+
+    def _is_similar_name(self, name1: str, name2: str) -> bool:
+        """
+        Check if two artist names are similar/variations of each other.
+        
+        Args:
+            name1 (str): First artist name
+            name2 (str): Second artist name
+            
+        Returns:
+            bool: True if names are similar, False otherwise
+        """
+        # Normalize both names
+        norm1 = normalize_artist_name(name1)
+        norm2 = normalize_artist_name(name2)
+        
+        # Check for exact match after normalization
+        if norm1 == norm2:
+            return True
+        
+        # Check for one being a substring of the other (if names are long enough)
+        if len(norm1) > 5 and len(norm2) > 5:
+            if norm1 in norm2 or norm2 in norm1:
+                return True
+        
+        return False
+
+    def _clean_recommendations_dict(self, recommendations: Dict[str, List[str]], source_artist_names: Set[str]) -> Dict[str, List[str]]:
+        """
+        Perform final cleaning on recommendations dictionary to ensure no problematic entries.
+        
+        Args:
+            recommendations (Dict[str, List[str]]): Dictionary of recommendations
+            source_artist_names (Set[str]): Set of normalized source artist names
+            
+        Returns:
+            Dict[str, List[str]]: Cleaned recommendations dictionary
+        """
+        # Create new dictionary for cleaned recommendations
+        cleaned_recommendations = {}
+        
+        for source_artist, recommended_artists in recommendations.items():
+            # Skip if source artist should be excluded
+            if should_exclude_artist(source_artist):
+                continue
+            
+            # Create a cleaned list of recommendations
+            cleaned_recs = []
+            source_normalized = normalize_artist_name(source_artist)
+            
+            for rec_artist in recommended_artists:
+                rec_normalized = normalize_artist_name(rec_artist)
+                
+                # Skip if:
+                # 1. Recommended artist is invalid/should be excluded
+                # 2. Recommended artist is the same as source artist
+                # 3. Recommended artist is in the list of source artists
+                if (should_exclude_artist(rec_artist) or
+                    rec_normalized == source_normalized or
+                    rec_normalized in source_artist_names):
+                    continue
+                    
+                cleaned_recs.append(rec_artist)
+            
+            # Only add if we have valid recommendations after cleaning
+            if cleaned_recs:
+                cleaned_recommendations[source_artist] = cleaned_recs
+        
+        return cleaned_recommendations
+
+    def _get_genre_families(self, genres: List[str]) -> Set[str]:
+        """
+        Map individual genres to broader genre families.
+        
+        Args:
+            genres (List[str]): List of specific genres
+            
+        Returns:
+            Set[str]: Set of genre family names
+        """
+        # Define broader genre families
+        genre_families = {
+            'electronic': ['electronic', 'electronica', 'trance', 'house', 'techno', 'edm', 
+                            'dubstep', 'drum and bass', 'ambient', 'idm', 'chillout', 
+                            'electro', 'dance', 'synth', 'synth-pop'],
+            
+            'rock': ['rock', 'alternative rock', 'indie rock', 'hard rock', 'classic rock', 
+                     'progressive rock', 'art rock', 'psychedelic rock', 'post-rock', 
+                     'garage rock', 'grunge', 'punk rock', 'metal', 'heavy metal', 'post-punk'],
+            
+            'pop': ['pop', 'dance pop', 'synth pop', 'indie pop', 'pop rock', 'electropop', 
+                    'dream pop', 'power pop', 'art pop', 'britpop', 'k-pop', 'j-pop'],
+            
+            'hip hop': ['hip hop', 'rap', 'trap', 'drill', 'grime', 'conscious rap', 'alternative hip hop'],
+            
+            'r&b': ['r&b', 'soul', 'neo-soul', 'contemporary r&b', 'funk'],
+            
+            'jazz': ['jazz', 'bebop', 'fusion', 'smooth jazz', 'jazz fusion', 
+                     'contemporary jazz', 'acid jazz', 'free jazz', 'swing', 'big band'],
+            
+            'classical': ['classical', 'baroque', 'romantic', 'contemporary classical', 
+                          'opera', 'chamber music', 'symphony', 'orchestral', 'piano'],
+            
+            'folk': ['folk', 'folk rock', 'indie folk', 'contemporary folk', 'traditional folk', 
+                     'singer-songwriter', 'americana', 'bluegrass'],
+            
+            'world': ['world', 'reggae', 'latin', 'afrobeat', 'bossa nova', 'flamenco', 
+                      'salsa', 'samba', 'traditional', 'celtic', 'worldbeat'],
+        }
+        
+        # Identify source artist's primary genre families
+        result = set()
+        for genre in genres:
+            genre_lower = genre.lower()
+            for family_name, family_genres in genre_families.items():
+                if any(family_genre in genre_lower for family_genre in family_genres):
+                    result.add(family_name)
+        
+        return result
 
     def get_recommendations(self, source_artists: List[Tuple[str, int]], 
                   limit: int = 10) -> Dict[str, List[str]]:
@@ -462,7 +607,7 @@ class MusicDiscoveryApp:
         self.scanner = scanner
         self.music_db = music_db
         self.persistence = persistence
-
+        
     def run(self, max_source_artists: Optional[int] = None) -> None:
         """
         Run the music discovery process with enhanced handling of Various Artists compilations.
@@ -503,9 +648,13 @@ class MusicDiscoveryApp:
         )
         
         # Get recommendations from library artists
-        recommendations = recommendation_service.get_recommendations(
+        initial_recommendations = recommendation_service.get_recommendations(
             library_artists
         )
+        
+        # Debug output to verify initial recommendations
+        initial_rec_count = sum(len(recs) for recs in initial_recommendations.values())
+        print(f"{Fore.RED}DEBUG: Initial recommendations contain {len(initial_recommendations)} artists with {initial_rec_count} total recommendations{Style.RESET_ALL}")
         
         # Phase 2.5: Process compilation albums for additional recommendations
         # Add an explicit delimiter that's easier to find in logs
@@ -516,18 +665,23 @@ class MusicDiscoveryApp:
         print(f"{Fore.CYAN}###################################################{Style.RESET_ALL}")
         
         # Use the new method to process compilations, passing library artist names
-        updated_recommendations = self.process_compilations(recommendations, library_artist_names)
+        updated_recommendations = self.process_compilations(initial_recommendations, library_artist_names)
         
-        # Update our recommendations with the new ones
-        recommendations = updated_recommendations
-        
+        # Debug output to verify updated recommendations after compilation processing
+        updated_rec_count = sum(len(recs) for recs in updated_recommendations.values())
+        print(f"{Fore.RED}DEBUG: After compilation processing: {len(updated_recommendations)} artists with {updated_rec_count} total recommendations{Style.RESET_ALL}")
+                
         # Phase 3: Save recommendations
-        print(f"{Fore.CYAN}Phase 3: Saving recommendations{Style.RESET_ALL}")
-        self.persistence.save(recommendations)
-        
+        print(f"{Fore.CYAN}Phase 3: Saving recommendations (local + global deduplication){Style.RESET_ALL}")
+
+        # Save locally using existing JsonFilePersistence logic
+        self.persistence.save(updated_recommendations)
+
         # Print summary
         print(f"\n{Fore.GREEN}=== RECOMMENDATION SUMMARY ==={Style.RESET_ALL}")
-        print(f"{Fore.CYAN}Total recommendations: {len(recommendations)} artists{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}Total recommendations: {len(updated_recommendations)} artists{Style.RESET_ALL}")
+        total_recommended_tracks = sum(len(artists) for artists in updated_recommendations.values())
+        print(f"{Fore.CYAN}Total recommended tracks: {total_recommended_tracks}{Style.RESET_ALL}")
         
     def process_compilations(self, existing_recommendations: Dict[str, List[str]], library_artist_names: Set[str]) -> Dict[str, List[str]]:
         """
@@ -542,6 +696,13 @@ class MusicDiscoveryApp:
             Dict[str, List[str]]: Updated recommendations including compilation artists
         """
         print(f"{Fore.CYAN}Processing compilation albums for additional recommendations...{Style.RESET_ALL}")
+        
+        # Keep track of all recommended artists across all source artists to avoid duplicates
+        all_recommended_artists = set()
+        for _, recommended_list in existing_recommendations.items():
+            all_recommended_artists.update(recommended_list)
+        
+        print(f"{Fore.YELLOW}Currently tracking {len(all_recommended_artists)} already recommended artists{Style.RESET_ALL}")
         
         additional_recommendations = {}
         
@@ -623,6 +784,11 @@ class MusicDiscoveryApp:
                         print(f"{Fore.YELLOW}Artist '{artist}' found in library. Skipping.{Style.RESET_ALL}")
                         continue
                     
+                    # Skip invalid artists
+                    if should_exclude_artist(artist):
+                        print(f"{Fore.YELLOW}Excluding invalid artist: '{artist}'{Style.RESET_ALL}")
+                        continue
+                    
                     try:
                         # Search for the artist on MusicBrainz
                         artist_info = self.music_db.search_artist(artist)
@@ -643,15 +809,20 @@ class MusicDiscoveryApp:
                         # Extract names only
                         similar_artist_names = [a.get('name', '') for a in similar_artists if a]
                         
-                        # Filter out empty names and library artists
+                        # Filter out empty names, library artists, artists already recommended, and invalid artists
                         similar_artist_names = [
                             name for name in similar_artist_names 
-                            if name and normalize_artist_name(name) not in library_artists_normalized
+                            if name and 
+                            normalize_artist_name(name) not in library_artists_normalized and
+                            name not in all_recommended_artists and
+                            not should_exclude_artist(name)
                         ]
                         
                         # Store recommendations if found
                         if similar_artist_names:
                             updated_recommendations[artist] = similar_artist_names
+                            # Update our tracking set with the new recommendations
+                            all_recommended_artists.update(similar_artist_names)
                             # Use a specific format that will be detected to update the status
                             print(f"{Fore.GREEN}Added {len(similar_artist_names)} recommendations for '{artist}' from compilation{Style.RESET_ALL}")
                         
@@ -671,6 +842,7 @@ class MusicDiscoveryApp:
         new_recommendations = len(updated_recommendations) - len(existing_recommendations)
         print(f"{Fore.GREEN}Processed {albums_processed} compilation albums{Style.RESET_ALL}")
         print(f"{Fore.GREEN}Added {new_recommendations} new artists with recommendations{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}Total unique recommended artists now: {len(all_recommended_artists)}{Style.RESET_ALL}")
         
         return updated_recommendations
         
@@ -1093,22 +1265,20 @@ def main():
         recommendations = process_music_library(music_dir, mb_email=args.mb_email)
         process_time = time.time() - start_time
         print(f"Music discovery completed in {process_time:.2f} seconds")
-        
-        # Save recommendations
+
+        # Determine output path
         if args.save_in_music_dir:
             output_file = os.path.join(music_dir, "recommendations.json")
         else:
             output_file = "recommendations.json"
+
+        # Save recommendations using JsonFilePersistence
+        persistence = JsonFilePersistence(output_file=output_file)
+        persistence.save(recommendations)
         
-        print(f"Saving recommendations to {output_file}")
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(recommendations, f, indent=2)
-        
-        # Print summary
+        # Print summary (deduplicated already printed in save())
         total_source_artists = len(recommendations)
         total_recommendations = sum(len(similar_artists) for similar_artists in recommendations.values())
-        print(f"\nTotal source artists with recommendations: {total_source_artists}")
-        print(f"Total recommended artists: {total_recommendations}")
         print(f"Average recommendations per artist: {total_recommendations / total_source_artists:.1f}")
         print("\nMusic discovery complete!")
         

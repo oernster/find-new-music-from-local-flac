@@ -596,52 +596,34 @@ class MusicBrainzAPI(MusicDatabase):
         return related_artists
 
     def _search_by_genre(self, artist_id: str) -> List[Dict]:
-        """
-        Search for artists with similar genres.
-        
-        Args:
-            artist_id (str): MusicBrainz ID of the source artist
-            
-        Returns:
-            List[Dict]: List of genre-similar artist dictionaries
-        """
-        # Get source artist genres
         genres_result = self._make_api_request(
             f"{self.base_url}artist/{artist_id}", 
             {'inc': 'genres', 'fmt': 'json'}, 
             f"Fetching genres for {artist_id}"
         )
         
-        # Extract genres
         genres = [genre['name'] for genre in genres_result.get('genres', [])] if genres_result else []
-        
         if not genres:
             return []
-        
-        # Search artists by first genre
+
+        first_genre = genres[0]
+        if not first_genre:
+            return []
+
         genre_search_result = self._make_api_request(
             f"{self.base_url}artist", 
             {
-                'query': f'tag:"{genres[0]}"',
+                'query': f'tag:"{first_genre}"',
                 'limit': 50,
                 'fmt': 'json'
             },
-            f"Searching for genre {genres[0]}"
+            f"Searching for genre {first_genre}"
         )
         
         return genre_search_result.get('artists', []) if genre_search_result else []
 
+
     def _search_by_name_pattern(self, artist_id: str) -> List[Dict]:
-        """
-        Search for artists with similar name patterns.
-        
-        Args:
-            artist_id (str): MusicBrainz ID of the source artist
-            
-        Returns:
-            List[Dict]: List of name-similar artist dictionaries
-        """
-        # Fetch source artist name
         artist_result = self._make_api_request(
             f"{self.base_url}artist/{artist_id}", 
             {'fmt': 'json'}, 
@@ -651,18 +633,19 @@ class MusicBrainzAPI(MusicDatabase):
         if not artist_result or 'name' not in artist_result:
             return []
         
-        # Extract search words from artist name
         name = artist_result['name']
         name_words = [word for word in name.split() if len(word) > 3]
-        
         if not name_words:
             return []
-        
-        # Search by first meaningful word
+
+        first_word = name_words[0]
+        if not first_word:
+            return []
+
         name_search_result = self._make_api_request(
             f"{self.base_url}artist", 
             {
-                'query': f'artist:{name_words[0]}',
+                'query': f'artist:{first_word}',
                 'limit': 50,
                 'fmt': 'json'
             },

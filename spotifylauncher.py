@@ -7,6 +7,7 @@ import os
 import argparse
 import subprocess
 import webbrowser
+import logging
 import time
 import threading
 import traceback
@@ -27,6 +28,17 @@ from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, QObject, QMutex, QMutexLocker, pyqtSlot, QEvent, QRect,
     QPropertyAnimation, QEasingCurve, pyqtProperty, QSize, QPointF, QRectF
 )
+
+
+class GuiLogHandler(logging.Handler):
+    def __init__(self, log_func):
+        super().__init__()
+        self.log_func = log_func
+
+    def emit(self, record):
+        msg = self.format(record)
+        self.log_func(msg)
+
 
 DEFAULT_EMAIL = "your email"  # Use the same email as in musicdiscovery.py
 
@@ -646,23 +658,70 @@ class ScriptWorker(QThread):
                 self.original_total_artists = 0  # Total artists reported initially
                 self.max_artist_count = 0  # Maximum artist count seen
                 self.current_value = 0  # Current progress value
+                self.various_artists_phase = False  # Track if we're in various artists phase
             
             # VERY EXPLICIT progress reset for various artists processing
             if "RESET_PROGRESS_BAR_NOW" in line and "VARIOUS_ARTISTS_PROCESSING" in line:
                 self.safe_emit_output("EXPLICIT PROGRESS RESET DETECTED - Resetting for Various Artists Processing")
                 
-                # Send a strong signal to the UI to reset everything
+                # Send a strong signal to the UI to reset everything for phase 2
+                # We need to send 100% to first bar to ensure it shows as complete
+                self.update_progress.emit(100, "Primary Artists Discovery Complete")
+                
+                # Small delay to allow UI to update the first progress bar
+                time.sleep(0.1)
+                
+                # Now send the signal to start the second phase
                 self.update_progress.emit(0, "Starting Various Artists Processing")
                 
-                # Reset all counters for a fresh start
+                # Set the phase flag
+                self.various_artists_phase = True
+                
+                # Reset phase 2 counters for a fresh start
                 self.current_value = 0
-                self.max_artist_count = 0
                 self.processed_artists = 0
                 self.total_artists = 0
                 
                 if hasattr(self, 'current_artist_number'):
                     self.current_artist_number = 0
                     
+                return True
+            
+            # Auto-detect phase 1 completion and transition to phase 2
+            completed_phase1 = False
+            
+            # Check for messages that indicate completed artist processing
+            if not self.various_artists_phase and any(phrase in line.lower() for phrase in [
+                "finished processing all artists",
+                "primary artists phase complete",
+                "completed primary artist discovery",
+                "phase 1 complete",
+                "artist processing complete",
+                "processed all artists successfully"
+            ]):
+                completed_phase1 = True
+                self.safe_emit_output("Detected phase 1 completion message - Transitioning to Various Artists phase")
+            
+            # Check for 100% progress report in phase 1
+            progress_100_match = re.search(r'Progress: 100(?:\.0+)?% \((\d+)/(\d+)', line)
+            if not self.various_artists_phase and progress_100_match:
+                completed_phase1 = True
+                self.safe_emit_output("Detected 100% progress in phase 1 - Transitioning to Various Artists phase")
+            
+            # If we detected phase 1 completion, transition to phase 2
+            if completed_phase1:
+                # Send completion signal for phase 1
+                self.update_progress.emit(100, "Primary Artists Discovery Complete")
+                
+                # Small delay to allow UI to update
+                time.sleep(0.1)
+                
+                # Start phase 2
+                self.various_artists_phase = True
+                self.current_value = 0
+                
+                # Signal the start of various artists phase
+                self.update_progress.emit(0, "Starting Various Artists Processing")
                 return True
                 
             # Reset counter for compilation album processing
@@ -674,6 +733,13 @@ class ScriptWorker(QThread):
             # Compilation album progress pattern: (N/M compilation albums)
             compilation_progress_match = re.search(r'Progress: (\d+(?:\.\d+)?)% \((\d+)/(\d+) compilation albums\)', line)
             if compilation_progress_match:
+                # If we're not yet in various artists phase, switch to it
+                if not self.various_artists_phase:
+                    self.safe_emit_output("Detected compilation album processing - Transitioning to Various Artists phase")
+                    self.update_progress.emit(100, "Primary Artists Discovery Complete")
+                    time.sleep(0.1)
+                    self.various_artists_phase = True
+                    
                 percentage = float(compilation_progress_match.group(1))
                 current = int(compilation_progress_match.group(2))
                 total = int(compilation_progress_match.group(3))
@@ -686,13 +752,36 @@ class ScriptWorker(QThread):
 
             # Processing compilation album specific line
             if "Processing compilation album:" in line:
+                # If we're not yet in various artists phase, switch to it
+                if not self.various_artists_phase:
+                    self.safe_emit_output("Detected compilation album - Transitioning to Various Artists phase")
+                    self.update_progress.emit(100, "Primary Artists Discovery Complete")
+                    time.sleep(0.1)
+                    self.various_artists_phase = True
+                    
                 album_match = re.search(r'Processing compilation album: (.+)', line)
                 if album_match:
                     album_name = album_match.group(1)
                     # Update status text to show current album name
                     self.update_progress.emit(-1, f"Processing compilation album: {album_name}")
                     return True
+            
+            # If we've detected we're in various artists phase, direct updates to the second progress bar
+            if self.various_artists_phase:
+                # If we're in phase 2 but see a generic progress update, use it for the second bar
+                generic_progress_match = re.search(r'Progress: (\d+\.\d+)%', line)
+                if generic_progress_match and not compilation_progress_match:  # Make sure we didn't already match above
+                    percentage = float(generic_progress_match.group(1))
+                    int_percentage = min(int(percentage), 100)  # Cap at 100
+                    self.update_progress.emit(int_percentage, f"Various Artists: {int_percentage}% complete")
+                    self.current_value = int_percentage
+                    return True
+                    
+                # Return for phase 2 - let any other processing for this phase happen elsewhere
+                return False
 
+            # If we're not in various artists phase, continue with normal phase 1 processing
+            
             # First, check for genre-related progress indicators
             
             # Check for genre progress pattern: Processing: X% (Y/Z genres)
@@ -718,96 +807,7 @@ class ScriptWorker(QThread):
                 self.current_value = percentage
                 return True
             
-            # Check for "Processing genre: X with Y artists"
-            genre_artists_match = re.search(r'Processing genre: (.+?) with (\d+) artists', line)
-            if genre_artists_match:
-                genre_name = genre_artists_match.group(1)
-                artists_count = int(genre_artists_match.group(2))
-                
-                # Update our tracking variables
-                self.current_genre_name = genre_name
-                self.current_genre_artists = artists_count
-                self.total_artists_in_genres += artists_count
-                
-                # Update the status but don't change the progress percentage
-                status_message = f"Processing genre: {genre_name} ({self.current_genre}/{self.total_genres}) with {artists_count} artists"
-                self.update_progress.emit(-6, status_message)
-                return True
-            
-            # Check for "Processing up to X artists for genre: Y"
-            processing_up_to_match = re.search(r'Processing up to (\d+) artists for genre: (.+)', line)
-            if processing_up_to_match:
-                artists_to_process = int(processing_up_to_match.group(1))
-                genre_name = processing_up_to_match.group(2)
-                
-                # This updates how many we'll actually process (may be less than total)
-                if artists_to_process < self.current_genre_artists:
-                    # Adjust our total to be more accurate
-                    self.total_artists_in_genres -= (self.current_genre_artists - artists_to_process)
-                    self.current_genre_artists = artists_to_process
-                
-                # Update the status but don't change the progress percentage
-                status_message = f"Processing {artists_to_process} artists for genre: {genre_name} ({self.current_genre}/{self.total_genres})"
-                self.update_progress.emit(-6, status_message)
-                return True
-            
-            # Check for "Added X track(s) from Artist (Y/Z)"
-            artist_track_match = re.search(r'Added .+ track\(s\) from .+ \((\d+)/(\d+)\)', line)
-            if artist_track_match:
-                current_artist = int(artist_track_match.group(1))
-                total_artists = int(artist_track_match.group(2))
-                
-                # Update our tracking for the current genre
-                self.current_genre_processed = current_artist
-                
-                # Update our cumulative artist count
-                if current_artist > self.current_genre_processed:
-                    self.processed_artists_in_genres += 1
-                
-                # Calculate overall progress
-                overall_percentage = 0
-                if self.total_artists_in_genres > 0:
-                    overall_percentage = int((self.processed_artists_in_genres / self.total_artists_in_genres) * 100)
-                
-                # Create a status message showing both the current genre progress and cumulative progress
-                genre_progress = f"{current_artist}/{total_artists}"
-                cumulative_progress = f"{self.processed_artists_in_genres}/{self.total_artists_in_genres}"
-                
-                status_message = f"Genre {self.current_genre_name}: {genre_progress} artists - Overall: {cumulative_progress} artists"
-                
-                # Emit the progress update - we'll calculate percentage based on completed genres + partial current genre
-                genre_percentage = int(self.current_genre / self.total_genres * 100)
-                genre_fraction = (current_artist / total_artists) / self.total_genres
-                adjusted_percentage = genre_percentage - (100 / self.total_genres) + int(genre_fraction * 100)
-                
-                # Make sure the progress is always increasing
-                if adjusted_percentage > self.current_value:
-                    self.current_value = adjusted_percentage
-                
-                self.update_progress.emit(self.current_value, status_message)
-                return True
-                
-            # Look for metadata artist progress pattern
-            metadata_progress_match = re.search(r'Progress \(metadata artists\): (\d+\.\d+)% \((\d+)/(\d+)\)', line)
-            if metadata_progress_match:
-                percentage = float(metadata_progress_match.group(1))
-                current = int(metadata_progress_match.group(2))
-                total = int(metadata_progress_match.group(3))
-                
-                # For metadata artists, calculate our own percentage
-                int_percentage = int(percentage)
-                self.update_progress.emit(int_percentage, f"Processing metadata artist {current} of {total}")
-                self.current_value = int_percentage
-                return True
-                
-            # Processing additional artists from metadata
-            additional_match = re.search(r'Processing (\d+) additional artists found in metadata', line)
-            if additional_match:
-                count = additional_match.group(1)
-                self.update_progress.emit(self.current_value, f"Processing {count} additional artists from metadata")
-                return True
-            
-            # If no genre-specific patterns match, fall back to the original logic
+            # First phase processing for primary artists
             
             # Check for total artists initialization
             total_artists_match = re.search(r'JSON file contains (\d+) total unique artists to process', line)
@@ -862,6 +862,12 @@ class ScriptWorker(QThread):
                 
                 # Store current value for future comparisons
                 self.current_value = int(corrected_percentage)
+                
+                # If we've reached 100%, this might be the end of phase 1
+                if int_percentage >= 100:
+                    self.safe_emit_output("Primary artists phase reached 100% - Preparing for transition")
+                    # Don't trigger transition here, let the UI handle it
+                
                 return True
             
             # Detect scanning library
@@ -947,84 +953,6 @@ class ScriptWorker(QThread):
                 self.current_value = int_percentage
                 return True
             
-            # Detect phase transition to playlist generation
-            if any(marker in line.lower() for marker in [
-                "starting playlist generation", 
-                "processing artists in genre",
-                "adding artists to playlist",
-                "creating playlist"
-            ]):
-                # Signal phase transition without setting progress to 100%
-                self.update_progress.emit(-2, "Starting Playlist Generation")
-                return True
-            
-            # Detect creating a specific playlist
-            playlist_match = re.search(r"Creating playlist '(.+?)' with (\d+) tracks", line)
-            if playlist_match:
-                playlist_name = playlist_match.group(1)
-                tracks = playlist_match.group(2)
-                self.update_progress.emit(-4, f"Creating playlist: {playlist_name} ({tracks} tracks)")
-                return True
-            
-            # Detect successful playlist creation
-            if "Playlist URL:" in line:
-                playlist_url_match = re.search(r"Playlist URL: (https://open\.spotify\.com/playlist/\w+)", line)
-                if playlist_url_match:
-                    self.update_progress.emit(-5, "Playlist created successfully")
-                    return True
-            
-            # Detect organizing tracks for a specific artist
-            organize_match = re.search(r"Organizing tracks for artist: (.+)", line)
-            if organize_match:
-                artist = organize_match.group(1)
-                if len(artist) > 30:
-                    artist = artist[:27] + "..."
-                self.update_progress.emit(-7, f"Finding tracks for: {artist}")
-                return True
-            
-            # Detect artist genre classification
-            if "Genre Lookup Summary:" in line:
-                self.update_progress.emit(-1, "Artist Genre Classification Complete")
-                return True
-            
-            # Detect successful recommendations
-            if "Total source artists with recommendations:" in line:
-                rec_match = re.search(r"Total source artists with recommendations: (\d+)", line)
-                if rec_match:
-                    count = rec_match.group(1)
-                    self.update_progress.emit(97, f"Generated recommendations for {count} artists")
-                    return True
-            
-            # Finished processing message
-            finished_processing_match = re.search(r'Finished processing (\d+) artists', line)
-            if finished_processing_match:
-                count = finished_processing_match.group(1)
-                self.update_progress.emit(90, f"Finished processing {count} artists")
-                return True
-            
-            # Found compilation albums
-            compilation_match = re.search(r'Found (\d+) compilation albums', line)
-            if compilation_match:
-                count = compilation_match.group(1)
-                self.update_progress.emit(-1, f"Found {count} compilation albums")
-                return True
-            
-            # No artists found in compilation
-            if "No artists found for album" in line and "Using MusicBrainz lookup" in line:
-                album_match = re.search(r"No artists found for album '(.+?)'\.", line)
-                if album_match:
-                    album_name = album_match.group(1)
-                    self.update_progress.emit(-1, f"Looking up artists for album: {album_name}")
-                    return True
-            
-            # Artist from compilation
-            if "Added" in line and "recommendations for" in line and "from compilation" in line:
-                artist_match = re.search(r"Added .+ recommendations for '(.+?)' from compilation", line)
-                if artist_match:
-                    artist_name = artist_match.group(1)
-                    self.update_progress.emit(-1, f"Added recommendations for: {artist_name}")
-                    return True
-            
             # Detect saving recommendations
             if "Saving recommendations" in line:
                 self.update_progress.emit(98, "Saving recommendations to file")
@@ -1077,6 +1005,9 @@ class SpotifyLauncher(QMainWindow):
         
         self.phase2_active = False
         
+        # Flag to track whether we're processing various artists
+        self.discovery_various_artists_active = False
+        
         # Configure window
         self.setWindowTitle("GenreGenius")
         self.setMinimumSize(700, 700)  # Larger window to accommodate console output
@@ -1117,7 +1048,11 @@ class SpotifyLauncher(QMainWindow):
         self.discovery_button.clicked.connect(self.launch_music_discovery)
         discovery_layout.addWidget(self.discovery_button)
         
-        # Progress bar
+        # First phase label for Music Discovery
+        self.discovery_phase1_label = QLabel("Phase 1: Primary Artists Discovery")
+        discovery_layout.addWidget(self.discovery_phase1_label)
+        
+        # First progress bar for Music Discovery (primary artists)
         self.discovery_progress = ColourProgressBar()
         self.discovery_progress.setRange(0, 100)
         self.discovery_progress.setValue(0)
@@ -1125,11 +1060,32 @@ class SpotifyLauncher(QMainWindow):
         self.discovery_progress.setTextVisible(False)  # Hide text
         discovery_layout.addWidget(self.discovery_progress)
         
-        # Status
+        # Status for first phase
         discovery_status_layout = QHBoxLayout()
         self.discovery_status = QLabel("Ready")
         discovery_status_layout.addWidget(self.discovery_status)
         discovery_layout.addLayout(discovery_status_layout)
+        
+        # Add a small spacer
+        discovery_layout.addSpacing(5)
+        
+        # Second phase label for Music Discovery
+        self.discovery_phase2_label = QLabel("Phase 2: Various Artists Processing")
+        discovery_layout.addWidget(self.discovery_phase2_label)
+        
+        # Second progress bar for Music Discovery (various artists)
+        self.discovery_progress2 = ColourProgressBar()
+        self.discovery_progress2.setRange(0, 100)
+        self.discovery_progress2.setValue(0)
+        self.discovery_progress2.setFormat("")
+        self.discovery_progress2.setTextVisible(False)
+        discovery_layout.addWidget(self.discovery_progress2)
+        
+        # Status for second phase
+        discovery_status2_layout = QHBoxLayout()
+        self.discovery_status2 = QLabel("Ready")
+        discovery_status2_layout.addWidget(self.discovery_status2)
+        discovery_layout.addLayout(discovery_status2_layout)
         
         upper_layout.addLayout(discovery_layout)
         
@@ -1232,6 +1188,13 @@ class SpotifyLauncher(QMainWindow):
         
         # Create thread-safe logger
         self.logger = ThreadSafeLogger()
+        handler = GuiLogHandler(lambda msg: self.logger.log_discovery(msg, self.discovery_output))
+        handler.setLevel(logging.INFO)  # Or DEBUG if needed
+        formatter = logging.Formatter('%(message)s')
+        handler.setFormatter(formatter)
+
+        logging.getLogger().addHandler(handler)
+        logging.getLogger().setLevel(logging.INFO)
         self.logger.setParent(self)  # Set parent to access truncate_status method
         
         # Load and set the icon
@@ -1455,7 +1418,10 @@ class SpotifyLauncher(QMainWindow):
         """
         self.spotify_phase1_label.setStyleSheet(label_style)
         self.spotify_phase2_label.setStyleSheet(label_style)
+        self.discovery_phase1_label.setStyleSheet(label_style)
+        self.discovery_phase2_label.setStyleSheet(label_style)
         self.discovery_status.setStyleSheet(label_style)
+        self.discovery_status2.setStyleSheet(label_style)
         self.spotify_status1.setStyleSheet(label_style)
         self.spotify_status2.setStyleSheet(label_style)
         
@@ -1496,8 +1462,8 @@ class SpotifyLauncher(QMainWindow):
             }}
         """)
 
-        # Overwrite the custom color progress bar style with dark theme
-        self.discovery_progress.setStyleSheet(f"""
+        # Style all progress bars with dark theme
+        progress_bar_style = f"""
             QProgressBar {{
                 border: 1px solid {border_color};
                 border-radius: 5px;
@@ -1513,43 +1479,13 @@ class SpotifyLauncher(QMainWindow):
                 width: 10px;
                 margin: 0.5px;
             }}
-        """)
+        """
         
-        self.spotify_progress1.setStyleSheet(f"""
-            QProgressBar {{
-                border: 1px solid {border_color};
-                border-radius: 5px;
-                text-align: center;
-                font-weight: bold;
-                color: white;
-                height: 25px;
-                background-color: {progress_bg};
-            }}
-
-            QProgressBar::chunk {{
-                background-color: {spotify_green};
-                width: 10px;
-                margin: 0.5px;
-            }}
-        """)
-        
-        self.spotify_progress2.setStyleSheet(f"""
-            QProgressBar {{
-                border: 1px solid {border_color};
-                border-radius: 5px;
-                text-align: center;
-                font-weight: bold;
-                color: white;
-                height: 25px;
-                background-color: {progress_bg};
-            }}
-
-            QProgressBar::chunk {{
-                background-color: {spotify_green};
-                width: 10px;
-                margin: 0.5px;
-            }}
-        """)
+        # Apply the style to all progress bars
+        self.discovery_progress.setStyleSheet(progress_bar_style)
+        self.discovery_progress2.setStyleSheet(progress_bar_style)
+        self.spotify_progress1.setStyleSheet(progress_bar_style)
+        self.spotify_progress2.setStyleSheet(progress_bar_style)
     
     def print_banner(self):
         """Print a colorful banner in the log."""
@@ -1937,6 +1873,7 @@ class SpotifyLauncher(QMainWindow):
             self.spotify_button.setEnabled(True)
             self.discovery_button.setEnabled(True)
 
+    # Modified run_music_discovery method to reset both progress bars
     def run_music_discovery(self):
         """Run the actual Music Discovery process with custom API settings."""
         # Skip configuration check since we're called after that
@@ -1946,8 +1883,13 @@ class SpotifyLauncher(QMainWindow):
 
         # Reset UI - clear the status text before showing dialog
         self.discovery_progress.setValue(0)
+        self.discovery_progress2.setValue(0)
         self.discovery_status.setText("")  # Clear status text completely
+        self.discovery_status2.setText("")  # Clear status text for second bar
         self.discovery_button.setEnabled(False)
+        
+        # Reset the various artists flag - MUST be false at start
+        self.discovery_various_artists_active = False
         
         # Disable the Spotify button while Music Discovery is running
         self.spotify_button.setEnabled(False)
@@ -2052,6 +1994,10 @@ class SpotifyLauncher(QMainWindow):
             self.log_status("Music Discovery thread created, starting...")
             self.log_discovery_output(f"Starting Music Discovery process for directory: {music_dir}...")
             self.log_discovery_output(f"Using MusicBrainz email: {musicbrainz_email}")
+
+            # Clear any previous phase states - explicitly initialize the first phase
+            self.discovery_status.setText("Initializing primary artist discovery...")
+            self.discovery_status2.setText("Waiting for primary artists to complete...")
 
             # Start the thread
             self.discovery_worker.start()
@@ -2623,6 +2569,7 @@ class SpotifyLauncher(QMainWindow):
             self.toggle_console_action.setChecked(False)
             self.toggle_console_output(False)  
     
+    # Modified toggle_console_output method to handle visibility of the new UI elements
     def toggle_console_output(self, checked):
         """
         Toggle the visibility of the console output tabs.
@@ -2649,12 +2596,15 @@ class SpotifyLauncher(QMainWindow):
         # Toggle visibility of console output
         self.output_tabs.setVisible(checked)
         
-        # Toggle visibility of text labels
+        # Toggle visibility of text labels and phase labels for all sections
         self.spotify_status1.setVisible(checked)
         self.spotify_status2.setVisible(checked)
         self.discovery_status.setVisible(checked)
+        self.discovery_status2.setVisible(checked)
         self.spotify_phase1_label.setVisible(checked)
         self.spotify_phase2_label.setVisible(checked)
+        self.discovery_phase1_label.setVisible(checked)
+        self.discovery_phase2_label.setVisible(checked)
         
         # The central widget layout and upper widget layout
         main_layout = self.central_widget.layout()
@@ -2665,7 +2615,7 @@ class SpotifyLauncher(QMainWindow):
                 # When hiding console, set compact layout
                 main_layout.setSpacing(5)
                 # Set fixed height for window in compact mode
-                self.setFixedHeight(350)  # Compact height based on screenshots
+                self.setFixedHeight(400)  # Slightly taller to accommodate additional progress bars
             else:
                 # When showing console, restore original spacing
                 main_layout.setSpacing(15)
@@ -2680,7 +2630,7 @@ class SpotifyLauncher(QMainWindow):
     def show_about(self):
         """Show information about the application with dark theme styling."""
         about_text = """
-    GenreGenius - Version 1.3.2
+    GenreGenius - Version 1.3.3
     By Oliver Ernster
 
     A tool for discovering music and generating
@@ -2832,13 +2782,22 @@ class SpotifyLauncher(QMainWindow):
                 self.discovery_output.append(formatted_message)
                 self.discovery_output.ensureCursorVisible()
                 
-                # Also update status label if it's a meaningful status message
-                if len(message) > 3 and not message.startswith("Executing:") and not message.startswith("Working directory:"):
-                    self.discovery_status.setText(self.truncate_status(message))
+                # Update the appropriate status label based on the current phase
+                if self.discovery_various_artists_active:
+                    # Update the second phase status label for various artists processing
+                    if len(message) > 3 and not message.startswith("Executing:") and not message.startswith("Working directory:"):
+                        self.discovery_status2.setText(self.truncate_status(message))
+                else:
+                    # Update the first phase status label for primary artists discovery
+                    if len(message) > 3 and not message.startswith("Executing:") and not message.startswith("Working directory:"):
+                        self.discovery_status.setText(self.truncate_status(message))
             else:
                 # Use the logger when in a worker thread
                 if hasattr(self, 'logger') and self.logger is not None:
-                    self.logger.log_discovery(message, self.discovery_output, self.discovery_status)
+                    if self.discovery_various_artists_active:
+                        self.logger.log_discovery(message, self.discovery_output, self.discovery_status2)
+                    else:
+                        self.logger.log_discovery(message, self.discovery_output, self.discovery_status)
                 else:
                     # Fallback using signals/slots
                     print(f"Logging from thread: {message}")
@@ -2983,6 +2942,7 @@ class SpotifyLauncher(QMainWindow):
         # Run the actual process
         self.run_music_discovery()
 
+    # Modified discovery_finished method to handle both progress bars
     def discovery_finished(self, success: bool):
         """
         Handle when music discovery is finished.
@@ -3023,19 +2983,48 @@ class SpotifyLauncher(QMainWindow):
                     cancellation_detected = True
             
             # Check if the progress is very low (suggesting we barely started)
-            if self.discovery_progress.value() < 5:
+            if self.discovery_progress.value() < 5 and not self.discovery_various_artists_active:
                 cancellation_detected = True
             
             # ONLY mark as complete if we detect explicit completion indicators
             if completion_detected and not cancellation_detected:
-                # Real completion - set to 100%
-                self.discovery_progress.setValue(100)
-                self.discovery_status.setText("Completed successfully")
+                # Make sure both progress bars show completed status
+                
+                # Ensure the first progress bar shows 100% if it's not already there
+                if self.discovery_progress.value() < 100:
+                    self.discovery_progress.setValue(100)
+                    self.discovery_status.setText("Primary Artists Discovery Complete")
+                
+                # If we entered the various artists phase, make sure it shows as complete
+                if self.discovery_various_artists_active:
+                    self.discovery_progress2.setValue(100)
+                    self.discovery_status2.setText("Various Artists Processing Complete")
+                else:
+                    # If no various artists processing occurred, still complete it to show we're done
+                    # First verify if the output mentions various artists processing
+                    various_artists_detected = any(phrase in output_text for phrase in [
+                        "various artists processing",
+                        "compilation album",
+                        "various_artists_processing",
+                        "processing compilation"
+                    ])
+                    
+                    if various_artists_detected:
+                        # Indicate that various artists processing occurred but completed
+                        self.discovery_progress2.setValue(100)
+                        self.discovery_status2.setText("Various Artists Processing Complete") 
+                    else:
+                        # If no various artists processing detected, show it wasn't needed
+                        self.discovery_progress2.setValue(0)
+                        self.discovery_status2.setText("No Various Artists Processing Required")
+                
                 self.log_discovery_output("Music Discovery completed successfully.")
             else:
-                # Either explicit cancellation or no proper completion detected
+                # Reset both progress bars on cancellation or incomplete run
                 self.discovery_progress.setValue(0)
+                self.discovery_progress2.setValue(0)
                 self.discovery_status.setText("Ready")
+                self.discovery_status2.setText("Ready")
                 
                 if cancellation_detected:
                     self.log_discovery_output("Operation cancelled.")
@@ -3044,8 +3033,13 @@ class SpotifyLauncher(QMainWindow):
         else:
             # Reset on failure
             self.discovery_progress.setValue(0)
+            self.discovery_progress2.setValue(0)
             self.discovery_status.setText("Failed")
+            self.discovery_status2.setText("Failed")
             self.log_discovery_output("Music Discovery process failed.")
+        
+        # Reset the various artists flag
+        self.discovery_various_artists_active = False
 
     def launch_spotify_client(self):
         """Launch the Spotify Client script with progress tracking."""
@@ -3064,190 +3058,10 @@ class SpotifyLauncher(QMainWindow):
         # Run the actual process
         self.run_spotify_client()
            
-    def update_spotify_progress(self, value: int, status: str):
-        """
-        Update the appropriate progress bar based on the phase.
-        
-        Args:
-            value (int): Progress value (0-100), or special codes for different status updates
-            status (str): Status message
-        """
-        try:
-            # Log all progress updates for debugging
-            self.log_status(f"Spotify progress update received: value={value}, status={status}")
-            
-            # Special status update codes:
-            # -1: Phase 1 complete
-            # -2: Phase transition
-            # -3: Processing artist
-            # -4: Creating playlist
-            # -5: Playlist created
-            # -6: Processing genre
-            # -7: Finding tracks for artist
-            
-            # Handle phase transition with special code -2
-            if value == -2 or any(marker in status.lower() for marker in [
-                "starting playlist generation",
-                "processing genres", 
-                "processing artists in genre",
-                "generating playlist",
-                "creating playlist"
-            ]):
-                # Mark Phase 1 as complete (but don't change its current progress)
-                # Only do this once when transitioning
-                if not self.phase2_active:
-                    self.spotify_status1.setText("Artist Classification Complete")
-                    # Initialize Phase 2
-                    self.phase2_active = True
-                    self.spotify_progress2.setValue(0)
-                    self.spotify_status2.setText("Starting Playlist Generation")
-                return
-            
-            # Handle phase 1 completion signal with special code -1
-            if value == -1 and not self.phase2_active:
-                # Don't change the progress bar, just update the status text
-                self.spotify_status1.setText("Artist Classification Complete")
-                return
-            
-            # Check if we're in phase 2 for genre/artist specific updates
-            if self.phase2_active:
-                # Genre processing update (code -6)
-                if value == -6:
-                    self.spotify_status2.setText(self.truncate_status(status))
-                    return
-                    
-                # Finding tracks for artist (code -7)
-                if value == -7:
-                    self.spotify_status2.setText(self.truncate_status(status))
-                    return
-                    
-                # Creating playlist (code -4)
-                if value == -4:
-                    self.spotify_status2.setText(self.truncate_status(status))
-                    return
-                    
-                # Playlist created successfully (code -5)
-                if value == -5:
-                    self.spotify_status2.setText(self.truncate_status(status))
-                    return
-                    
-                # Processing artist (code -3)
-                if value == -3:
-                    self.spotify_status2.setText(self.truncate_status(status))
-                    return
-                    
-                # Direct progress update for phase 2
-                if 0 <= value <= 100:
-                    self.spotify_progress2.setValue(value)
-                    self.spotify_status2.setText(self.truncate_status(status))
-                    return
-            
-            # Advanced artist processing pattern matching - for Phase 1
-            artist_match = re.search(r'Processing: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
-            if artist_match and not self.phase2_active:
-                percentage = float(artist_match.group(1))
-                current = int(artist_match.group(2))
-                total = int(artist_match.group(3))
-                
-                # Set progress bar for Phase 1
-                self.spotify_progress1.setValue(int(percentage))
-                
-                # Detailed status with artist count
-                status_text = f"Processing artist {current} of {total}"
-                self.spotify_status1.setText(self.truncate_status(status_text))
-                
-                # Log the progress for debugging
-                self.log_status(f"Updated Phase 1 progress bar to {percentage}% ({current}/{total})")
-                return
-            
-            # Check for "Genres: X/Y (Z%) - Artists: A/B" format for Phase 2
-            genres_artists_match = re.search(r'Genres: (\d+)/(\d+) \((\d+)%\) - Artists: (\d+)/(\d+)', status)
-            if genres_artists_match and self.phase2_active:
-                current_genre = int(genres_artists_match.group(1))
-                total_genres = int(genres_artists_match.group(2))
-                percentage = int(genres_artists_match.group(3))
-                current_artist = int(genres_artists_match.group(4))
-                total_artists = int(genres_artists_match.group(5))
-                
-                # Update progress bar for Phase 2
-                self.spotify_progress2.setValue(percentage)
-                
-                # Detailed status showing both genre and artist progress
-                status_text = f"Genres: {current_genre}/{total_genres} - Artists: {current_artist}/{total_artists}"
-                self.spotify_status2.setText(self.truncate_status(status_text))
-                
-                # Log the progress for debugging
-                self.log_status(f"Updated Phase 2 progress bar to {percentage}% - {status_text}")
-                return
-            
-            # Check for "Genre X: Y/Z artists - Overall: A/B artists" format for Phase 2
-            genre_artists_match = re.search(r'Genre (.+?): (\d+)/(\d+) artists - Overall: (\d+)/(\d+) artists', status)
-            if genre_artists_match and self.phase2_active:
-                genre_name = genre_artists_match.group(1)
-                current_in_genre = int(genre_artists_match.group(2))
-                total_in_genre = int(genre_artists_match.group(3))
-                overall_current = int(genre_artists_match.group(4))
-                overall_total = int(genre_artists_match.group(5))
-                
-                # Calculate percentage based on overall artists
-                if overall_total > 0:
-                    percentage = int((overall_current / overall_total) * 100)
-                    self.spotify_progress2.setValue(percentage)
-                
-                # Detailed status showing both current genre and overall progress
-                status_text = f"Genre {genre_name}: {current_in_genre}/{total_in_genre} - Overall: {overall_current}/{overall_total}"
-                self.spotify_status2.setText(self.truncate_status(status_text))
-                
-                # Log the progress for debugging
-                self.log_status(f"Updated Phase 2 progress bar for genre processing - {status_text}")
-                return
-            
-            # Fall back to direct progress percentage update if we're in the appropriate phase
-            if 0 <= value <= 100:
-                if self.phase2_active:
-                    self.spotify_progress2.setValue(value)
-                    
-                    # If this is a completion signal
-                    if value >= 95:
-                        self.spotify_status2.setText("Completing playlist generation...")
-                else:
-                    self.spotify_progress1.setValue(value)
-            
-            # Regular status updates - determine which phase to update
-            if self.phase2_active:
-                # Only update status text for meaningful messages
-                if not any(skip in status.lower() for skip in [
-                    "found virtual environment", 
-                    "spotify authentication", 
-                    "executing:", 
-                    "working directory:",
-                    "found artist progress:",
-                    "progress: ",  # Ignore raw progress messages
-                    "pausing for"   # Ignore rate limit pausing messages
-                ]):
-                    self.spotify_status2.setText(self.truncate_status(status))
-            else:
-                # Only update status text for Phase 1 if not a progress percentage update
-                if not any(skip in status.lower() for skip in [
-                    "found virtual environment", 
-                    "spotify authentication", 
-                    "executing:", 
-                    "working directory:",
-                    "found artist progress:",
-                    "progress: ",  # Ignore raw progress messages
-                    "pausing for"  # Ignore rate limit pausing messages
-                ]):
-                    self.spotify_status1.setText(self.truncate_status(status))
-        
-        except Exception as e:
-            # Log the error but don't crash
-            error_msg = f"Error in update_spotify_progress: {str(e)}\n{traceback.format_exc()}"
-            self.log_status(error_msg)
-            print(f"Error in update_spotify_progress: {str(e)}")
-            
+    # Modified update_discovery_progress method to handle both progress bars
     def update_discovery_progress(self, value: int, status: str):
         """
-        Update discovery progress with improved status display.
+        Update discovery progress with improved status display and support for two progress bars.
         
         Args:
             value (int): Progress value
@@ -3262,40 +3076,163 @@ class SpotifyLauncher(QMainWindow):
                 self.log_status("Ignoring directory progress")
                 return
             
-            # Special status update codes:
-            # -1: Phase complete
-            # -2: Phase transition
-            # -3: Processing artist
-            # -4: Creating playlist
-            # -5: Playlist created
-            # -6: Processing genre
-            # -7: Finding tracks for artist
-            
-            # Handle special status codes
-            if value < 0:
-                # Don't update progress bar for these special status updates
-                if status and len(status) > 3:
-                    self.discovery_status.setText(self.truncate_status(status))
+            # Check for the RESET_PROGRESS_BAR marker that indicates switching to various artists processing
+            if "RESET_PROGRESS_BAR_NOW" in status and "VARIOUS_ARTISTS_PROCESSING" in status:
+                self.log_status("Explicit progress reset detected - Switching to Various Artists processing")
+                
+                # Mark first phase as complete
+                self.discovery_progress.setValue(100)
+                self.discovery_status.setText("Primary Artists Discovery Complete")
+                
+                # Activate the second phase
+                self.discovery_various_artists_active = True
+                self.discovery_progress2.setValue(0)
+                self.discovery_status2.setText("Starting Various Artists Processing")
                 return
             
-            # Advanced artist processing pattern matching
-            artist_match = re.search(r'Processing: (\d+)/(\d+) artists', status)
-
-            if artist_match:
-                current = int(artist_match.group(1))
-                total = int(artist_match.group(2))
+            # Auto-transition when primary progress reaches 100%
+            if not self.discovery_various_artists_active and value >= 100:
+                self.log_status("Primary artists phase reached 100% - Transitioning to Various Artists processing")
                 
-                # Set progress bar
-                self.discovery_progress.setValue(value)
+                # Mark first phase as complete
+                self.discovery_progress.setValue(100)
+                self.discovery_status.setText("Primary Artists Discovery Complete")
                 
-                # Detailed status with artist count
-                status_text = f"Processing artist {current} of {total}"
-                self.discovery_status.setText(status_text)
+                # Activate the second phase
+                self.discovery_various_artists_active = True
+                self.discovery_progress2.setValue(0)
+                self.discovery_status2.setText("Starting Various Artists Processing")
+                return
             
-            # Progress percentage update (from the value parameter)
-            if isinstance(value, int) and value >= 0 and value <= 100:
-                self.discovery_progress.setValue(value)
-                self.log_status(f"Set progress to {value}% from value parameter")
+            # If we're in various artists processing mode, update the second progress bar
+            if self.discovery_various_artists_active:
+                # Check for compilation album progress pattern: (N/M compilation albums)
+                compilation_progress_match = re.search(r'Progress: (\d+(?:\.\d+)?)% \((\d+)/(\d+) compilation albums\)', status)
+                if compilation_progress_match:
+                    percentage = float(compilation_progress_match.group(1))
+                    current = int(compilation_progress_match.group(2))
+                    total = int(compilation_progress_match.group(3))
+                    
+                    # Set progress value and update status text to show compilation album progress
+                    int_percentage = int(percentage)
+                    self.discovery_progress2.setValue(int_percentage)
+                    self.discovery_status2.setText(f"Processing compilation album {current} of {total}")
+                    return
+
+                # Processing compilation album specific line
+                if "Processing compilation album:" in status:
+                    album_match = re.search(r'Processing compilation album: (.+)', status)
+                    if album_match:
+                        album_name = album_match.group(1)
+                        # Update status text to show current album name
+                        self.discovery_status2.setText(f"Processing compilation album: {album_name}")
+                        return
+                        
+                # Generic progress percentage update for various artists phase
+                if 0 <= value <= 100:
+                    # Only update if it's a forward progress
+                    current_value = self.discovery_progress2.value()
+                    if value > current_value or value == 100:
+                        self.discovery_progress2.setValue(value)
+                        if status and len(status) > 3:
+                            self.discovery_status2.setText(self.truncate_status(status))
+                    return
+            else:
+                # We're in the primary artists phase
+                
+                # Special status update codes:
+                # -1: Phase complete
+                # -2: Phase transition
+                # -3: Processing artist
+                # -4: Creating playlist
+                # -5: Playlist created
+                # -6: Processing genre
+                # -7: Finding tracks for artist
+                
+                # Handle special status codes
+                if value < 0:
+                    # Don't update progress bar for these special status updates
+                    if status and len(status) > 3:
+                        self.discovery_status.setText(self.truncate_status(status))
+                    return
+                
+                # Advanced artist processing pattern matching
+                artist_match = re.search(r'Processing: (\d+)/(\d+) artists', status)
+
+                if artist_match:
+                    current = int(artist_match.group(1))
+                    total = int(artist_match.group(2))
+                    
+                    # Calculate percentage - handle zero division
+                    percentage = int((current / total * 100) if total > 0 else 0)
+                    
+                    # Set progress bar
+                    self.discovery_progress.setValue(percentage)
+                    
+                    # Detailed status with artist count
+                    status_text = f"Processing artist {current} of {total}"
+                    self.discovery_status.setText(status_text)
+                    
+                    # Check if we're at 100% and should transition
+                    if percentage >= 100:
+                        self.log_status("Primary artists phase reached 100% from artist processing - Transitioning to Various Artists phase")
+                        self.discovery_various_artists_active = True
+                        self.discovery_progress2.setValue(0)
+                        self.discovery_status2.setText("Starting Various Artists Processing")
+                    
+                    return
+                
+                # Progress percentage update from value parameter (0-100)
+                if isinstance(value, int) and 0 <= value <= 100:
+                    self.discovery_progress.setValue(value)
+                    
+                    # If value is 100, we're completing primary phase
+                    if value == 100:
+                        self.discovery_status.setText("Primary Artists Discovery Complete")
+                        
+                        # Check if we should auto-transition to various artists phase
+                        if not self.discovery_various_artists_active:
+                            self.log_status("Primary artists phase reached 100% from direct value - Transitioning to Various Artists phase")
+                            self.discovery_various_artists_active = True
+                            self.discovery_progress2.setValue(0)
+                            self.discovery_status2.setText("Starting Various Artists Processing")
+                    elif status and len(status) > 3:
+                        self.discovery_status.setText(self.truncate_status(status))
+                        
+                    self.log_status(f"Set primary progress to {value}% from value parameter")
+                    return
+
+                # Detect artist directory counting
+                if "Found" in status and "artist directories with" in status:
+                    dirs_match = re.search(r'Found (\d+) artist directories with (\d+) potential album directories', status)
+                    if dirs_match:
+                        artists = dirs_match.group(1)
+                        albums = dirs_match.group(2)
+                        self.discovery_status.setText(f"Found {artists} artists with {albums} albums")
+                        return
+                
+                # Detect processing a specific artist
+                artist_processing = re.search(r'=== PROCESSING: (.+?) ===', status)
+                if artist_processing:
+                    artist_name = artist_processing.group(1)
+                    
+                    # Truncate long artist names for display
+                    if len(artist_name) > 30:
+                        artist_name = artist_name[:27] + "..."
+                    
+                    # Update status text
+                    self.discovery_status.setText(f"Processing artist: {artist_name}")
+                    return
+            
+            # Fallback status update for Any phase
+            if not self.discovery_various_artists_active:
+                # Phase 1 - only update if meaningful
+                if status and len(status) > 3:
+                    self.discovery_status.setText(self.truncate_status(status))
+            else:
+                # Phase 2 - only update if meaningful
+                if status and len(status) > 3:
+                    self.discovery_status2.setText(self.truncate_status(status))
         
         except Exception as e:
             # Log the error but don't crash
@@ -3346,17 +3283,23 @@ class SpotifyLauncher(QMainWindow):
             # -6: Processing genre
             # -7: Finding tracks for artist
             
-            # Handle phase transition with special code -2
-            if value == -2 or any(marker in status.lower() for marker in [
+            # Handle phase transition detection
+            phase_transition_markers = [
                 "starting playlist generation",
                 "processing genres", 
                 "processing artists in genre",
                 "generating playlist",
-                "creating playlist"
-            ]):
-                # Mark Phase 1 as complete (but don't change its current progress)
-                # Only do this once when transitioning
+                "creating playlist",
+                "phase 2",
+                "playlist generation phase"
+            ]
+            
+            # Explicit phase transition with special code -2
+            if value == -2:
+                self.log_status("Explicit phase transition signal received")
                 if not self.phase2_active:
+                    # Complete phase 1
+                    self.spotify_progress1.setValue(100)
                     self.spotify_status1.setText("Artist Classification Complete")
                     # Initialize Phase 2
                     self.phase2_active = True
@@ -3364,48 +3307,136 @@ class SpotifyLauncher(QMainWindow):
                     self.spotify_status2.setText("Starting Playlist Generation")
                 return
             
+            # Check for phase transition based on status message
+            if not self.phase2_active and any(marker in status.lower() for marker in phase_transition_markers):
+                self.log_status(f"Phase transition detected from status: {status}")
+                # Mark Phase 1 as complete
+                self.spotify_progress1.setValue(100)
+                self.spotify_status1.setText("Artist Classification Complete")
+                # Initialize Phase 2
+                self.phase2_active = True
+                self.spotify_progress2.setValue(0)
+                self.spotify_status2.setText("Starting Playlist Generation")
+                return
+            
             # Handle phase 1 completion signal with special code -1
             if value == -1 and not self.phase2_active:
-                # Don't change the progress bar, just update the status text
+                # Set progress to 100% and update status
+                self.spotify_progress1.setValue(100)
                 self.spotify_status1.setText("Artist Classification Complete")
                 return
             
-            # Advanced artist processing pattern matching
-            artist_match = re.search(r'Processing: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
-
-            if artist_match:
-                percentage = float(artist_match.group(1))
-                current = int(artist_match.group(2))
-                total = int(artist_match.group(3))
+            # Check if we're in phase 2 for status-specific updates
+            if self.phase2_active:
+                # Special status codes for phase 2
+                if value in [-3, -4, -5, -6, -7]:
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
                 
-                # Set progress bar
-                if not self.phase2_active:
+                # Check for specific progress patterns in phase 2
+                
+                # Check for "Genres: X/Y (Z%) - Artists: A/B" format
+                genres_artists_match = re.search(r'Genres: (\d+)/(\d+) \((\d+)%\) - Artists: (\d+)/(\d+)', status)
+                if genres_artists_match:
+                    percentage = int(genres_artists_match.group(3))
+                    # Update progress bar for Phase 2
+                    self.spotify_progress2.setValue(percentage)
+                    # Detailed status showing both genre and artist progress
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
+                
+                # Check for "Genre X: Y/Z artists - Overall: A/B artists" format
+                genre_artists_match = re.search(r'Genre (.+?): (\d+)/(\d+) artists - Overall: (\d+)/(\d+) artists', status)
+                if genre_artists_match:
+                    overall_current = int(genre_artists_match.group(4))
+                    overall_total = int(genre_artists_match.group(5))
+                    
+                    # Calculate percentage based on overall artists
+                    if overall_total > 0:
+                        percentage = int((overall_current / overall_total) * 100)
+                        self.spotify_progress2.setValue(percentage)
+                    
+                    # Detailed status showing both current genre and overall progress
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
+                
+                # Check for "Creating playlist" and playlist creation messages
+                if "creating playlist" in status.lower() or "playlist:" in status.lower():
+                    # Don't change progress value, just update status
+                    self.spotify_status2.setText(self.truncate_status(status))
+                    return
+                
+                # Direct progress update for phase 2
+                if 0 <= value <= 100:
+                    # Only update if it's a forward progress or 100%
+                    current_value = self.spotify_progress2.value()
+                    if value > current_value or value == 100:
+                        self.spotify_progress2.setValue(value)
+                        if status and len(status.strip()) > 3:
+                            self.spotify_status2.setText(self.truncate_status(status))
+                    return
+            else:
+                # We're in phase 1
+                
+                # Check for artist progress pattern
+                artist_match = re.search(r'Processing: (\d+\.\d+)% \((\d+)/(\d+) artists\)', status)
+                if artist_match:
+                    percentage = float(artist_match.group(1))
+                    current = int(artist_match.group(2))
+                    total = int(artist_match.group(3))
+                    
+                    # Set progress bar for Phase 1
                     self.spotify_progress1.setValue(int(percentage))
                     
                     # Detailed status with artist count
                     status_text = f"Processing artist {current} of {total}"
-                    self.spotify_status1.setText(status_text)
-                else:
-                    self.spotify_progress2.setValue(int(percentage))
-                    
-                    # Detailed status with artist count
-                    status_text = f"Processing artist {current} of {total} (Playlist Generation)"
-                    self.spotify_status2.setText(status_text)
-                    
-                    # Log the progress for debugging
-                    self.log_status(f"Updated Phase 2 progress bar to {percentage}% ({current}/{total})")
+                    self.spotify_status1.setText(self.truncate_status(status_text))
+                    return
                 
-                return
+                # Check for simple percentage in status
+                percentage_match = re.search(r'Progress: (\d+(?:\.\d+)?)%', status)
+                if percentage_match and not artist_match:  # Only if we didn't already match above
+                    percentage = float(percentage_match.group(1))
+                    self.spotify_progress1.setValue(int(percentage))
+                    
+                    # If this is the first progress update, use it to set the status
+                    if self.spotify_status1.text() == "Ready":
+                        self.spotify_status1.setText("Processing Artists")
+                    return
+                
+                # Direct progress update for phase 1
+                if 0 <= value <= 100:
+                    # Only update if it's a forward progress or 100%
+                    current_value = self.spotify_progress1.value()
+                    if value > current_value or value == 100:
+                        self.spotify_progress1.setValue(value)
+                        # If status is meaningful, update it
+                        if status and len(status.strip()) > 3 and not any(skip in status.lower() for skip in [
+                            "found virtual environment", 
+                            "executing:", 
+                            "working directory:",
+                            "progress: "
+                        ]):
+                            self.spotify_status1.setText(self.truncate_status(status))
+                    return
             
-            # Direct progress percentage update (from the value parameter)
-            if 0 <= value <= 100:
-                if self.phase2_active:
-                    self.spotify_progress2.setValue(value)
-                    # If this is a completion signal
-                    if value >= 95:
-                        self.spotify_status2.setText("Completing playlist generation...")
-                else:
-                    self.spotify_progress1.setValue(value)
+            # Fall back to basic status updates if nothing else matched
+            if self.phase2_active:
+                if status and len(status.strip()) > 3 and not any(skip in status.lower() for skip in [
+                    "found virtual environment", 
+                    "executing:", 
+                    "working directory:",
+                    "progress: "
+                ]):
+                    self.spotify_status2.setText(self.truncate_status(status))
+            else:
+                if status and len(status.strip()) > 3 and not any(skip in status.lower() for skip in [
+                    "found virtual environment", 
+                    "executing:", 
+                    "working directory:",
+                    "progress: "
+                ]):
+                    self.spotify_status1.setText(self.truncate_status(status))
         
         except Exception as e:
             # Log the error but don't crash
@@ -3446,7 +3477,8 @@ class SpotifyLauncher(QMainWindow):
                 # Check specifically for cancellation messages
                 cancellation_detected = any(phrase in output_text for phrase in [
                     "no file selected",
-                    "operation cancelled"
+                    "operation cancelled",
+                    "error: recommendations file not found"
                 ])
                 
                 # Also check if the output is very short (suggesting the file dialog was just opened and closed)
@@ -3462,11 +3494,11 @@ class SpotifyLauncher(QMainWindow):
                 # Complete all phases without resetting previous phases
                 if self.spotify_progress1.value() < 100:
                     self.spotify_progress1.setValue(100)
-                    self.spotify_status1.setText("Completed successfully")
+                    self.spotify_status1.setText("Artist Classification Complete")
                 
                 # Force Phase 2 to complete
                 self.spotify_progress2.setValue(100)
-                self.spotify_status2.setText("Completed successfully")
+                self.spotify_status2.setText("Playlist Generation Complete")
                 
                 self.log_spotify_output("Spotify Client completed successfully.")
                 self.log_spotify_output("Check your Spotify Web UI for playlists.")
