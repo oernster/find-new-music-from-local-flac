@@ -27,14 +27,14 @@ The Deezer App doesn't support API usage currently for developers so this has to
 ### Installation
 
 - Requires Windows for the UI.
-- Install Python 3 of some variety
-- Install git
+- Install [Python 3](https://www.python.org/)
+- Install [git](https://gitforwindows.org/)
 - Launch a terminal or powershell
 - Clone the repo: ```git clone https://github.com/oernster/playlist-generator.git``` - this will create a subdirectory in whatever location you are in when you run the command with the contents of this repository.
 - Create a virtual environment: ```python -m venv venv```
-- Activate it: ```venv\scripts\activate``` on windows or on linux/mac: ```source venv/bin/activate```
+- Activate it: ```venv\scripts\activate```
 - Install dependencies: ```pip install -r requirements.txt```
-- Upgrade pip to latest if needed: ```python -m pip install --upgrade pip```
+- Upgrade pip to latest: ```python -m pip install --upgrade pip```
 
 ## How to create the exe
 
@@ -43,7 +43,7 @@ The Deezer App doesn't support API usage currently for developers so this has to
 ## Running
 
 - Run the `GenreGenius.exe` created program.
-- Hit the Step 1 button.
+- Hit the Step 1 button; fill in credentials.
 - Hit the step 2 button.
 
 Note: Step 1 takes the longest time; step 2 (2 phases) also takes a some time depending on the number of artists generated but not so long.
